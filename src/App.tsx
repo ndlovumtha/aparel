@@ -1,13 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
-import { auth } from './lib/firebase';
+import { auth, ADMIN_BOOTSTRAP_EMAIL } from './lib/firebase';
 import {
+  GarmentSize,
+  OrderStatus,
   Product,
   CartItem,
   ShopifyConfig,
+  StockAlarm,
+  StockAlarmType,
   SyncLogEntry,
   CheckoutCustomerInfo,
   ConfirmedOrder,
+  SessionAccount,
+  CustomerOrderRecord,
 } from './types/store';
 import {
   DEFAULT_SHOPIFY_CONFIG,
@@ -24,15 +30,40 @@ import {
   seedDatabaseIfEmptyAsAdmin,
   createProductInFirestore,
   updateProductStockInFirestore,
+  updateProductVariantsAndStockInFirestore,
   batchRestockLowItemsInFirestore,
   applyFlashPriceSyncInFirestore,
   deleteProductInFirestore,
+  subscribeToStockAlarms,
+  sendStockAlarmInFirestore,
+  acknowledgeStockAlarmInFirestore,
+  deleteStockAlarmInFirestore,
+  subscribeToAllOrdersForAdmin,
+  dispatchOrderFromAdminInFirestore,
   subscribeToShopifyIntegration,
   saveShopifyConfigInFirestore,
   subscribeToSyncLogs,
   appendSyncLogInFirestore,
   createOrderInFirestore,
 } from './services/firestore';
+import {
+  PublicStoreOverlay,
+  acknowledgeAlarmOnServerApi,
+  appendSyncLogOnServerApi,
+  createOrderOnServerApi,
+  createProductOnServerApi,
+  deleteAlarmOnServerApi,
+  deleteProductOnServerApi,
+  dispatchOrderOnServerApi,
+  fetchOperationsSnapshot,
+  fetchPublicStoreOverlay,
+  logoutSession,
+  saveShopifyConfigOnServerApi,
+  sendStockAlarmOnServerApi,
+  updateProductVariantsOnServerApi,
+} from './services/authApi';
+import { getProductFloor, getProductSizeStock, getTotalFromStockMap } from './utils/inventory';
+import { hasAnyOpsPermission, hasOpsPermission } from './utils/permissions';
 import { INITIAL_PRODUCTS } from './data/products';
 import { Navbar } from './components/Navbar';
 import { Hero } from './components/Hero';
@@ -41,26 +72,51 @@ import { ProductGrid } from './components/ProductGrid';
 import { ProductDetailModal } from './components/ProductDetailModal';
 import { CartDrawer } from './components/CartDrawer';
 import { CustomCheckoutModal } from './components/CustomCheckoutModal';
-import { AdminLoginModal } from './components/AdminLoginModal';
+import { AuthModal } from './components/AuthModal';
 import { AdminPanelModal } from './components/AdminPanelModal';
 import { FabricTechnologySection } from './components/FabricTechnologySection';
 import { AthleteFitGuideModal } from './components/AthleteFitGuideModal';
 import { OrderTrackerModal } from './components/OrderTrackerModal';
+import { CustomerProfileOrdersModal } from './components/CustomerProfileOrdersModal';
 import { Footer } from './components/Footer';
-import { Flame, Truck, Lock, Zap } from 'lucide-react';
+import { Flame, Truck, LogIn, Zap, User as UserIcon } from 'lucide-react';
 
 const CART_STORAGE_KEY = 'offside_apparel_cart';
 const DISCOUNT_CODE_KEY = 'offside_discount_code';
 
 export default function App() {
-  const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
+  const [baseProducts, setBaseProducts] = useState<Product[]>(INITIAL_PRODUCTS);
+  const [storeOverlay, setStoreOverlay] = useState<PublicStoreOverlay>({
+    createdProducts: [],
+    productPatches: {},
+    deletedProductIds: [],
+  });
+
   const [promotions, setPromotions] = useState<FirestorePromotion[]>(INITIAL_PROMOTIONS);
   const [shopifyConfig, setShopifyConfig] = useState<ShopifyConfig>(DEFAULT_SHOPIFY_CONFIG);
+  const [serverShopifyConfig, setServerShopifyConfig] = useState<ShopifyConfig | null>(null);
   const [syncLogs, setSyncLogs] = useState<SyncLogEntry[]>(INITIAL_SYNC_LOGS);
+  const [serverSyncLogs, setServerSyncLogs] = useState<SyncLogEntry[]>([]);
+  const [firestoreAdminOrders, setFirestoreAdminOrders] = useState<CustomerOrderRecord[]>([]);
+  const [serverAdminOrders, setServerAdminOrders] = useState<CustomerOrderRecord[]>([]);
+  const [firestoreAlarms, setFirestoreAlarms] = useState<StockAlarm[]>([]);
+  const [serverAlarms, setServerAlarms] = useState<StockAlarm[]>([]);
 
-  // Firebase Auth & Admin Authorization State
+  // Firebase Auth & Custom Session Auth (token held strictly in React memory)
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(false);
+  const [isFirebaseAdmin, setIsFirebaseAdmin] = useState<boolean>(false);
+  const [sessionAccount, setSessionAccount] = useState<SessionAccount | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+
+  const isCustomOpsUser = Boolean(
+    sessionAccount && hasAnyOpsPermission(sessionAccount, false)
+  );
+  const canAccessOperations = isFirebaseAdmin || isCustomOpsUser;
+  const canPersistTrackingDispatch = hasOpsPermission(
+    sessionAccount,
+    isFirebaseAdmin,
+    'execute_order_dispatch'
+  );
 
   // Cart State
   const [cart, setCart] = useState<CartItem[]>(() => {
@@ -90,13 +146,61 @@ export default function App() {
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [isFitGuideOpen, setIsFitGuideOpen] = useState(false);
   const [isOrderTrackerOpen, setIsOrderTrackerOpen] = useState(false);
-  const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(false);
+  const [isOrderHistoryOpen, setIsOrderHistoryOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<'login' | 'signup'>('login');
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
   const [trackingOrderNumber, setTrackingOrderNumber] = useState('OF-849102');
+  const [catalogSearchQuery, setCatalogSearchQuery] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  // Top banner dismissible state
   const [bannerDismissed, setBannerDismissed] = useState(false);
+
+  // Merge Firestore/initial catalog with persistent server overlay
+  const products = useMemo<Product[]>(() => {
+    const deletedSet = new Set(storeOverlay.deletedProductIds);
+    const mergedBase = baseProducts
+      .filter((p) => !deletedSet.has(p.id))
+      .map((p) => {
+        const patch = storeOverlay.productPatches[p.id];
+        if (!patch) return p;
+        const sizes = patch.sizes ?? p.sizes;
+        const stockBySize = patch.stockBySize ?? p.stockBySize;
+        const totalQty = stockBySize
+          ? getTotalFromStockMap(sizes, stockBySize)
+          : p.inventoryQuantity;
+        return {
+          ...p,
+          ...patch,
+          sizes,
+          stockBySize,
+          inventoryQuantity: totalQty,
+          inStock: totalQty > 0,
+        };
+      });
+
+    const createdVisible = storeOverlay.createdProducts.filter((p) => !deletedSet.has(p.id));
+    return [...createdVisible, ...mergedBase];
+  }, [baseProducts, storeOverlay]);
+
+  const combinedOrders = useMemo<CustomerOrderRecord[]>(() => {
+    const map = new Map<string, CustomerOrderRecord>();
+    for (const o of firestoreAdminOrders) map.set(o.orderNumber, { ...o, source: 'firestore' });
+    for (const o of serverAdminOrders) map.set(o.orderNumber, { ...o, source: 'server' });
+    return Array.from(map.values()).sort((a, b) => b.createdAtMillis - a.createdAtMillis);
+  }, [firestoreAdminOrders, serverAdminOrders]);
+
+  const combinedAlarms = useMemo<StockAlarm[]>(() => {
+    const map = new Map<string, StockAlarm>();
+    for (const a of firestoreAlarms) map.set(a.id, a);
+    for (const a of serverAlarms) map.set(a.id, a);
+    return Array.from(map.values()).sort((a, b) => b.createdAtMillis - a.createdAtMillis);
+  }, [firestoreAlarms, serverAlarms]);
+
+  const activeShopifyConfig = serverShopifyConfig || shopifyConfig;
+  const activeSyncLogs = useMemo(() => {
+    const list = [...serverSyncLogs, ...syncLogs];
+    return list.length > 0 ? list.slice(0, 40) : INITIAL_SYNC_LOGS;
+  }, [serverSyncLogs, syncLogs]);
 
   // Persist cart to localStorage
   useEffect(() => {
@@ -107,6 +211,37 @@ export default function App() {
     }
   }, [cart]);
 
+  // Fetch public catalog overlay from Express server
+  useEffect(() => {
+    fetchPublicStoreOverlay()
+      .then((overlay) => setStoreOverlay(overlay))
+      .catch((err) => console.warn('Could not load store overlay:', err));
+  }, []);
+
+  // Refresh server operations snapshot for Superuser / Staff
+  const refreshServerOperations = useCallback(async (token: string) => {
+    try {
+      const snap = await fetchOperationsSnapshot(token);
+      setServerAdminOrders(snap.orders || []);
+      setServerAlarms(snap.stockAlarms || []);
+      if (snap.shopifyConfig) setServerShopifyConfig(snap.shopifyConfig);
+      setServerSyncLogs(snap.syncLogs || []);
+    } catch (err) {
+      console.warn('Operations snapshot refresh failed:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isCustomOpsUser || !authToken) {
+      setServerAdminOrders([]);
+      setServerAlarms([]);
+      setServerShopifyConfig(null);
+      setServerSyncLogs([]);
+      return;
+    }
+    refreshServerOperations(authToken);
+  }, [isCustomOpsUser, authToken, refreshServerOperations]);
+
   // Listen to Firebase Auth state and seed Firestore if Admin signs in
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (user) => {
@@ -114,16 +249,16 @@ export default function App() {
       if (user) {
         try {
           const isAdmin = await checkIsUserAdmin(user);
-          setIsAdminLoggedIn(isAdmin);
+          setIsFirebaseAdmin(isAdmin);
           if (isAdmin) {
             await seedDatabaseIfEmptyAsAdmin();
           }
         } catch (err) {
           console.error('Admin verification check error:', err);
-          setIsAdminLoggedIn(false);
+          setIsFirebaseAdmin(false);
         }
       } else {
-        setIsAdminLoggedIn(false);
+        setIsFirebaseAdmin(false);
       }
     });
     return () => unsubAuth();
@@ -132,7 +267,7 @@ export default function App() {
   // Subscribe to public Storefront Products and Promotions collections in Firestore
   useEffect(() => {
     const unsubProducts = subscribeToProducts((dbProducts) => {
-      setProducts(dbProducts);
+      setBaseProducts(dbProducts);
     });
     const unsubPromos = subscribeToPromotions((dbPromos) => {
       setPromotions(dbPromos);
@@ -143,11 +278,13 @@ export default function App() {
     };
   }, []);
 
-  // Subscribe to Admin-only Shopify Integration config & Audit Logs when authenticated as Admin
+  // Subscribe to Firestore Admin-only streams when Firebase Admin is signed in
   useEffect(() => {
-    if (!isAdminLoggedIn) {
+    if (!isFirebaseAdmin) {
       setShopifyConfig(DEFAULT_SHOPIFY_CONFIG);
       setSyncLogs(INITIAL_SYNC_LOGS);
+      setFirestoreAdminOrders([]);
+      setFirestoreAlarms([]);
       return;
     }
 
@@ -157,12 +294,20 @@ export default function App() {
     const unsubLogs = subscribeToSyncLogs((logs) => {
       if (logs.length > 0) setSyncLogs(logs);
     });
+    const unsubAlarms = subscribeToStockAlarms((alarms) => {
+      setFirestoreAlarms(alarms);
+    });
+    const unsubOrders = subscribeToAllOrdersForAdmin((ordersList) => {
+      setFirestoreAdminOrders(ordersList);
+    });
 
     return () => {
       unsubIntegration();
       unsubLogs();
+      unsubAlarms();
+      unsubOrders();
     };
-  }, [isAdminLoggedIn]);
+  }, [isFirebaseAdmin]);
 
   // Toast notification helper
   const showToast = (message: string) => {
@@ -170,6 +315,53 @@ export default function App() {
     setTimeout(() => {
       setToastMessage(null);
     }, 3500);
+  };
+
+  const handleOpenLogin = (mode: 'login' | 'signup' = 'login') => {
+    setAuthModalMode(mode);
+    setIsAuthModalOpen(true);
+  };
+
+  const handleCustomAuthSuccess = (user: SessionAccount, token: string) => {
+    setSessionAccount(user);
+    setAuthToken(token);
+    setIsAuthModalOpen(false);
+    if (user.role === 'superuser' || user.role === 'staff') {
+      if (hasAnyOpsPermission(user, isFirebaseAdmin)) {
+        setIsAdminPanelOpen(true);
+        showToast(
+          `Signed in as ${user.role.toUpperCase()} (@${user.username}) · ${
+            user.rightsProfileName || 'Operations'
+          }`
+        );
+      } else {
+        showToast(`Signed in as @${user.username} — No operational rights assigned yet.`);
+      }
+    } else {
+      showToast(`Welcome, ${user.fullName} (@${user.username})`);
+    }
+  };
+
+  const handleLogoutAll = async () => {
+    if (authToken) {
+      try {
+        await logoutSession(authToken);
+      } catch {
+        // Ignore network errors on logout
+      }
+    }
+    try {
+      if (auth.currentUser) {
+        await signOut(auth);
+      }
+    } catch (err) {
+      console.error('Sign out error:', err);
+    }
+    setAuthToken(null);
+    setSessionAccount(null);
+    setIsFirebaseAdmin(false);
+    setIsAdminPanelOpen(false);
+    showToast('Signed out of account');
   };
 
   // Add item to cart
@@ -200,13 +392,17 @@ export default function App() {
     showToast(`Added ${quantity}x ${product.title} (Size ${size}) to Bag`);
   };
 
-  // Quick add with default size & color
   const handleQuickAdd = (product: Product) => {
-    handleAddToCart(product, product.sizes[0] || 'M', product.colors[0]?.name || 'Pitch Carbon', 1);
+    const firstAvailableSize =
+      product.sizes.find((sz) => getProductSizeStock(product, sz) > 0) || product.sizes[0] || 'M';
+    if (getProductSizeStock(product, firstAvailableSize) <= 0) {
+      setSelectedProduct(product);
+      return;
+    }
+    handleAddToCart(product, firstAvailableSize, product.colors[0]?.name || 'Pitch Carbon', 1);
     setIsCartOpen(true);
   };
 
-  // Update item quantity
   const handleUpdateQuantity = (id: string, delta: number) => {
     setCart((prev) =>
       prev
@@ -221,12 +417,10 @@ export default function App() {
     );
   };
 
-  // Remove item
   const handleRemoveItem = (id: string) => {
     setCart((prev) => prev.filter((item) => item.id !== id));
   };
 
-  // Apply discount code
   const handleApplyDiscount = (code: string): { success: boolean; message: string } => {
     const cleanCode = code.trim().toUpperCase();
     if (cleanCode === 'OLYMPIC20') {
@@ -253,93 +447,196 @@ export default function App() {
     return { success: false, message: 'Invalid code. Use "OLYMPIC20" or "PRO15".' };
   };
 
-  // Admin Access Handler
-  const handleOpenAdmin = () => {
-    if (isAdminLoggedIn) {
-      setIsAdminPanelOpen(true);
-    } else {
-      setIsAdminLoginOpen(true);
-    }
-  };
-
-  const handleAdminLoginSuccess = () => {
-    setIsAdminLoggedIn(true);
-    setIsAdminLoginOpen(false);
-    setIsAdminPanelOpen(true);
-    showToast('Admin Session Authorized');
-  };
-
-  const handleAdminLogout = async () => {
-    try {
-      await signOut(auth);
-    } catch (err) {
-      console.error('Sign out error:', err);
-    }
-    setIsAdminLoggedIn(false);
-    setIsAdminPanelOpen(false);
-    showToast('Admin Logged Out');
-  };
-
-  // Admin Stock Actions (Firestore)
-  const handleUpdateStock = async (productId: string, newQuantity: number) => {
-    await updateProductStockInFirestore(productId, newQuantity);
-    showToast('Stock quantity saved to Firestore');
-  };
-
-  const handleAddStock = async (productId: string, addUnits: number) => {
-    const prod = products.find((p) => p.id === productId);
-    const currentQty = prod ? prod.inventoryQuantity : 0;
-    const nextQty = Math.max(0, currentQty + addUnits);
-    await updateProductStockInFirestore(productId, nextQty);
-    showToast(`Added ${addUnits > 0 ? `+${addUnits}` : addUnits} units to Firestore stock`);
-  };
-
+  // Operations Actions (Server API for Superuser/Staff + Firestore when Google Admin active)
   const handleBatchRestock = async (incrementAmount: number = 20) => {
-    const count = await batchRestockLowItemsInFirestore(products, incrementAmount);
+    let count = 0;
+    if (isCustomOpsUser && authToken) {
+      const belowFloor = products.filter((p) => p.inventoryQuantity <= getProductFloor(p));
+      for (const p of belowFloor) {
+        const nextMap: Partial<Record<GarmentSize, number>> = { ...(p.stockBySize || {}) };
+        const perSize = Math.max(1, Math.floor(incrementAmount / p.sizes.length));
+        let extra = incrementAmount % p.sizes.length;
+        for (const sz of p.sizes) {
+          const add = perSize + (extra > 0 ? 1 : 0);
+          if (extra > 0) extra -= 1;
+          nextMap[sz] = Math.min(100000, (nextMap[sz] ?? 0) + add);
+        }
+        const res = await updateProductVariantsOnServerApi(authToken, p.id, p, {
+          stockBySize: nextMap,
+        });
+        setStoreOverlay(res.overlay);
+        count += 1;
+      }
+      await refreshServerOperations(authToken);
+    }
+    if (isFirebaseAdmin) {
+      const fsCount = await batchRestockLowItemsInFirestore(products, incrementAmount);
+      count = Math.max(count, fsCount);
+    }
     showToast(
       count > 0
-        ? `Batch restocked ${count} low inventory SKUs (+${incrementAmount} units)`
-        : 'All SKUs already have healthy inventory'
+        ? `Batch restocked ${count} below-floor SKUs (+${incrementAmount} units)`
+        : 'All SKUs are above stock floor thresholds'
     );
   };
 
-  // Admin Product Actions (Firestore)
-  const handleCreateProduct = async (newProductData: Omit<Product, 'id' | 'shopifyId' | 'handle'>) => {
-    await createProductInFirestore(newProductData);
-    showToast(`Created & published "${newProductData.title}" to Firestore`);
+  const handleCreateProduct = async (
+    newProductData: Omit<Product, 'id' | 'shopifyId' | 'handle'>
+  ) => {
+    if (isCustomOpsUser && authToken) {
+      const res = await createProductOnServerApi(authToken, newProductData);
+      setStoreOverlay(res.overlay);
+      await refreshServerOperations(authToken);
+    }
+    if (isFirebaseAdmin) {
+      await createProductInFirestore(newProductData);
+    }
+    showToast(`Created & published "${newProductData.title}"`);
+  };
+
+  const handleUpdateProductVariantsAndStock = async (
+    product: Product,
+    updates: {
+      sizes?: GarmentSize[];
+      colors?: { name: string; hex: string }[];
+      stockBySize?: Partial<Record<GarmentSize, number>>;
+      stockFloor?: number;
+      stockCeiling?: number;
+    }
+  ) => {
+    if (isCustomOpsUser && authToken) {
+      const res = await updateProductVariantsOnServerApi(authToken, product.id, product, updates);
+      setStoreOverlay(res.overlay);
+      await refreshServerOperations(authToken);
+    }
+    if (isFirebaseAdmin && !product.id.startsWith('offside-srv-')) {
+      await updateProductVariantsAndStockInFirestore(product, updates);
+    }
+    showToast(`Saved variants & per-size stock for "${product.title}"`);
+  };
+
+  const handleSendStockAlarm = async (params: {
+    productId: string;
+    productTitle: string;
+    alarmType: StockAlarmType;
+    triggerScope: 'total' | 'size';
+    size?: GarmentSize;
+    currentQuantity: number;
+    threshold: number;
+    recipientEmail: string;
+    message: string;
+  }) => {
+    if (isCustomOpsUser && authToken) {
+      await sendStockAlarmOnServerApi(authToken, params);
+      await refreshServerOperations(authToken);
+    }
+    if (isFirebaseAdmin) {
+      await sendStockAlarmInFirestore(params);
+    }
+    showToast(`Stock alarm dispatched to ${params.recipientEmail}`);
+  };
+
+  const handleAcknowledgeAlarm = async (alarmId: string) => {
+    if (isCustomOpsUser && authToken) {
+      await acknowledgeAlarmOnServerApi(authToken, alarmId);
+      await refreshServerOperations(authToken);
+    }
+    if (isFirebaseAdmin) {
+      await acknowledgeStockAlarmInFirestore(alarmId);
+    }
+    showToast('Stock alarm acknowledged');
+  };
+
+  const handleDeleteAlarm = async (alarmId: string) => {
+    if (isCustomOpsUser && authToken) {
+      await deleteAlarmOnServerApi(authToken, alarmId);
+      await refreshServerOperations(authToken);
+    }
+    if (isFirebaseAdmin) {
+      await deleteStockAlarmInFirestore(alarmId);
+    }
+    showToast('Stock alarm dismissed');
+  };
+
+  const handleDispatchOrder = async (params: {
+    order: CustomerOrderRecord;
+    nextStatus: OrderStatus;
+    courier: string;
+    trackingNumber: string;
+    dispatchNotes?: string;
+    deductStock: boolean;
+  }) => {
+    if (params.order.source === 'server' || (isCustomOpsUser && authToken)) {
+      if (authToken && params.order.source === 'server') {
+        await dispatchOrderOnServerApi(authToken, {
+          orderNumber: params.order.orderNumber,
+          nextStatus: params.nextStatus,
+          courier: params.courier,
+          trackingNumber: params.trackingNumber,
+          dispatchNotes: params.dispatchNotes,
+          deductStock: params.deductStock,
+          products,
+        });
+        await refreshServerOperations(authToken);
+      }
+    }
+    if (isFirebaseAdmin && params.order.source !== 'server') {
+      await dispatchOrderFromAdminInFirestore({
+        ...params,
+        products,
+      });
+    }
+    showToast(`Order #${params.order.orderNumber} updated to "${params.nextStatus}"`);
   };
 
   const handleDeleteProduct = async (productId: string) => {
     const prod = products.find((p) => p.id === productId);
-    await deleteProductInFirestore(productId, prod?.title);
-    showToast('Product removed from Firestore catalog');
+    if (isCustomOpsUser && authToken) {
+      const res = await deleteProductOnServerApi(authToken, productId);
+      setStoreOverlay(res.overlay);
+      await refreshServerOperations(authToken);
+    }
+    if (isFirebaseAdmin && !productId.startsWith('offside-srv-')) {
+      await deleteProductInFirestore(productId, prod?.title);
+    }
+    showToast('Product removed from catalog');
   };
 
-  // Trigger Shopify catalog sync from Admin and persist snapshot to Firestore
   const handleTriggerSync = async () => {
     try {
-      const res = await syncCatalogFromShopify(shopifyConfig);
+      const res = await syncCatalogFromShopify(activeShopifyConfig);
       const updatedCfg: ShopifyConfig = {
         ...getShopifyConfig(),
         syncStatus: 'synced',
         lastSyncedAt: new Date().toISOString(),
         itemsCount: products.length,
       };
-      await saveShopifyConfigInFirestore(updatedCfg);
-      await appendSyncLogInFirestore({
-        event: 'SHOPIFY_FIRESTORE_SYNC',
-        details: `Synchronized Shopify endpoint (${shopifyConfig.storeDomain}) with ${products.length} Firestore SKUs.`,
-        status: 'success',
-      });
+      if (isCustomOpsUser && authToken) {
+        await saveShopifyConfigOnServerApi(authToken, updatedCfg);
+        await appendSyncLogOnServerApi(
+          authToken,
+          'SHOPIFY_CATALOG_SYNC',
+          `Synchronized endpoint (${activeShopifyConfig.storeDomain}) with ${products.length} SKUs.`,
+          'success'
+        );
+        await refreshServerOperations(authToken);
+      }
+      if (isFirebaseAdmin) {
+        await saveShopifyConfigInFirestore(updatedCfg);
+        await appendSyncLogInFirestore({
+          event: 'SHOPIFY_FIRESTORE_SYNC',
+          details: `Synchronized Shopify endpoint (${shopifyConfig.storeDomain}) with ${products.length} Firestore SKUs.`,
+          status: 'success',
+        });
+      }
       setShopifyConfig(updatedCfg);
       showToast(`Storefront catalog synchronized (${res.products.length} SKUs)`);
     } catch (e) {
       console.error(e);
-      showToast('Synchronization completed with Firestore catalog');
+      showToast('Synchronization completed');
     }
   };
 
-  // Trigger simulated webhook from Admin persisted in Firestore
   const handleTriggerWebhook = async (
     type: 'inventory_reduced' | 'price_sync' | 'new_product',
     productId?: string
@@ -349,20 +646,68 @@ export default function App() {
 
     if (type === 'inventory_reduced') {
       const nextQty = Math.max(0, target.inventoryQuantity - 1);
-      await updateProductStockInFirestore(target.id, nextQty);
-      await appendSyncLogInFirestore({
-        event: 'WEBHOOK: inventory_levels/connect',
-        details: `Shopify webhook decremented ${target.title} to ${nextQty} units.`,
-        status: 'info',
-      });
+      if (isCustomOpsUser && authToken) {
+        const firstSz = target.sizes[0] || 'M';
+        const nextMap = { ...(target.stockBySize || {}) };
+        nextMap[firstSz] = Math.max(0, (nextMap[firstSz] ?? 1) - 1);
+        const res = await updateProductVariantsOnServerApi(authToken, target.id, target, {
+          stockBySize: nextMap,
+        });
+        setStoreOverlay(res.overlay);
+        await appendSyncLogOnServerApi(
+          authToken,
+          'WEBHOOK: inventory_levels/connect',
+          `Shopify webhook decremented ${target.title} size ${firstSz}.`,
+          'info'
+        );
+        await refreshServerOperations(authToken);
+      }
+      if (isFirebaseAdmin && !target.id.startsWith('offside-srv-')) {
+        await updateProductStockInFirestore(target.id, nextQty, target);
+        await appendSyncLogInFirestore({
+          event: 'WEBHOOK: inventory_levels/connect',
+          details: `Shopify webhook decremented ${target.title} to ${nextQty} units.`,
+          status: 'info',
+        });
+      }
     } else if (type === 'price_sync') {
-      await applyFlashPriceSyncInFirestore(target.id, target.price);
+      const newPrice = Math.max(1, Math.round(target.price * 0.95));
+      if (isCustomOpsUser && authToken) {
+        const res = await updateProductVariantsOnServerApi(authToken, target.id, target, {
+          price: newPrice,
+          compareAtPrice: target.price,
+        });
+        setStoreOverlay(res.overlay);
+        await appendSyncLogOnServerApi(
+          authToken,
+          'WEBHOOK: products/update',
+          `Flash pricing sync applied to ${target.title} ($${newPrice}).`,
+          'success'
+        );
+        await refreshServerOperations(authToken);
+      }
+      if (isFirebaseAdmin && !target.id.startsWith('offside-srv-')) {
+        await applyFlashPriceSyncInFirestore(target.id, target.price);
+      }
     }
     showToast(`Webhook event executed: ${type}`);
   };
 
-  // Process custom checkout atomically in Firestore
+  // Process custom checkout (Server API for username/password accounts, Firestore for Google accounts)
   const handleProcessOrder = async (customer: CheckoutCustomerInfo): Promise<ConfirmedOrder> => {
+    if (sessionAccount && authToken) {
+      const res = await createOrderOnServerApi(authToken, {
+        items: cart,
+        customer,
+        discountPercentage,
+        currentProducts: products,
+      });
+      setStoreOverlay(res.overlay);
+      if (isCustomOpsUser) {
+        await refreshServerOperations(authToken);
+      }
+      return res.order;
+    }
     return await createOrderInFirestore(cart, customer, discountPercentage, products);
   };
 
@@ -388,7 +733,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Slim Dismissible Top Notification Bar (<= 40px) - No Shopify mentions */}
+      {/* Slim Dismissible Top Notification Bar (No public Admin Portal button) */}
       {!bannerDismissed && (
         <div className="bg-[#12151b] border-b border-[#1f242e] px-4 py-2 text-xs flex items-center justify-between text-slate-300">
           <div className="max-w-7xl mx-auto flex items-center justify-center gap-3 w-full">
@@ -417,12 +762,24 @@ export default function App() {
             </button>
             <span className="hidden md:inline text-slate-700">·</span>
             <button
-              onClick={handleOpenAdmin}
-              className="text-xs text-slate-400 hover:text-white font-mono inline-flex items-center gap-1 transition-colors cursor-pointer"
+              onClick={() => setIsOrderHistoryOpen(true)}
+              className="text-xs text-slate-300 hover:text-white font-mono inline-flex items-center gap-1 transition-colors cursor-pointer"
             >
-              <Lock className="w-3 h-3 text-[#ccff00]" />
-              <span>Admin Portal</span>
+              <UserIcon className="w-3 h-3 text-[#ccff00]" />
+              <span>Order History</span>
             </button>
+            {!sessionAccount && !currentUser && (
+              <>
+                <span className="hidden md:inline text-slate-700">·</span>
+                <button
+                  onClick={() => handleOpenLogin('login')}
+                  className="text-xs text-slate-300 hover:text-white font-mono inline-flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <LogIn className="w-3 h-3 text-[#ccff00]" />
+                  <span>Login / Sign Up</span>
+                </button>
+              </>
+            )}
           </div>
           <button
             onClick={() => setBannerDismissed(true)}
@@ -434,43 +791,50 @@ export default function App() {
         </div>
       )}
 
-      {/* Navigation adhering to Top Bar Contract */}
+      {/* Navigation */}
       <Navbar
         cartCount={totalCartItems}
         onOpenCart={() => setIsCartOpen(true)}
-        onOpenAdmin={handleOpenAdmin}
+        onOpenLogin={handleOpenLogin}
+        onOpenOperations={() => {
+          if (canAccessOperations) setIsAdminPanelOpen(true);
+        }}
+        onLogoutAll={handleLogoutAll}
         onOpenFitGuide={() => setIsFitGuideOpen(true)}
         onOpenOrderTracker={() => setIsOrderTrackerOpen(true)}
+        onOpenOrderHistory={() => setIsOrderHistoryOpen(true)}
         onOpenSpecials={scrollToPromotions}
-        isAdminLoggedIn={isAdminLoggedIn}
+        canAccessOperations={canAccessOperations}
+        sessionAccount={sessionAccount}
+        currentUser={currentUser}
+        searchQuery={catalogSearchQuery}
+        onSearchChange={setCatalogSearchQuery}
+        onSearchSubmit={scrollToCollection}
       />
 
       {/* Main Content */}
       <main className="flex-1">
-        {/* Campaign Hero - Clean, minimal, zero Shopify text */}
         <Hero
           onExploreClick={scrollToCollection}
           onViewSpecials={scrollToPromotions}
         />
 
-        {/* Specials & Promotions Slider Component */}
         <PromotionsSlider
           promotions={promotions}
           onApplyPromoCode={handleApplyDiscount}
           onExploreCategory={() => scrollToCollection()}
         />
 
-        {/* Product Catalog Grid - Filterable, clean */}
         <ProductGrid
           products={products}
           onSelectProduct={(product) => setSelectedProduct(product)}
           onQuickAdd={handleQuickAdd}
+          searchQuery={catalogSearchQuery}
+          onClearSearch={() => setCatalogSearchQuery('')}
         />
 
-        {/* Textile Lab & Fabric Technology */}
         <FabricTechnologySection />
 
-        {/* Disciplines & Competition Strip */}
         <section id="disciplines" className="bg-[#0b0c0e] py-16 px-6 border-b border-[#1b1f28]">
           <div className="max-w-7xl mx-auto">
             <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-10">
@@ -525,9 +889,12 @@ export default function App() {
       </main>
 
       {/* Modals & Slide-Overs */}
-      {/* 1. Product Detail Modal */}
       <ProductDetailModal
-        product={selectedProduct}
+        product={
+          selectedProduct
+            ? products.find((p) => p.id === selectedProduct.id) || selectedProduct
+            : null
+        }
         onClose={() => setSelectedProduct(null)}
         onAddToCart={handleAddToCart}
         onOpenFitGuide={() => {
@@ -536,7 +903,6 @@ export default function App() {
         }}
       />
 
-      {/* 2. Cart Drawer */}
       <CartDrawer
         isOpen={isCartOpen}
         onClose={() => setIsCartOpen(false)}
@@ -552,7 +918,6 @@ export default function App() {
         onApplyDiscount={handleApplyDiscount}
       />
 
-      {/* 3. Fully Customized Checkout Experience */}
       <CustomCheckoutModal
         isOpen={isCheckoutOpen}
         onClose={() => setIsCheckoutOpen(false)}
@@ -560,6 +925,8 @@ export default function App() {
         discountCode={discountCode}
         discountPercentage={discountPercentage}
         currentUser={currentUser}
+        sessionAccount={sessionAccount}
+        onOpenLoginModal={(mode = 'login') => handleOpenLogin(mode)}
         onProcessOrder={handleProcessOrder}
         onOrderSuccess={() => {
           setCart([]);
@@ -570,55 +937,88 @@ export default function App() {
         }}
       />
 
-      {/* 4. Athlete Fit Guide Modal */}
       <AthleteFitGuideModal
         isOpen={isFitGuideOpen}
         onClose={() => setIsFitGuideOpen(false)}
       />
 
-      {/* 5. Order Tracker Modal */}
       <OrderTrackerModal
         isOpen={isOrderTrackerOpen}
         onClose={() => setIsOrderTrackerOpen(false)}
         initialOrderNumber={trackingOrderNumber}
         currentUser={currentUser}
-        isAdmin={isAdminLoggedIn}
+        sessionAccount={sessionAccount}
+        authToken={authToken}
+        isAdmin={canPersistTrackingDispatch}
       />
 
-      {/* 6. Admin Login Modal */}
-      <AdminLoginModal
-        isOpen={isAdminLoginOpen}
-        onClose={() => setIsAdminLoginOpen(false)}
-        onLoginSuccess={handleAdminLoginSuccess}
-        currentUser={currentUser}
+      {/* Unified Login / Customer Sign Up / First-Run Superuser Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        initialMode={authModalMode}
+        onClose={() => setIsAuthModalOpen(false)}
+        onAuthSuccess={handleCustomAuthSuccess}
+        onGoogleLoginSuccess={(user) => {
+          showToast(`Signed in with Google (${user.email})`);
+        }}
       />
 
-      {/* 7. Dedicated Admin Panel: Stock Management, Product Creator & Integrations */}
+      {/* Operations Console (Accessible after Superuser, Staff, or Admin sign-in) */}
       <AdminPanelModal
-        isOpen={isAdminPanelOpen}
+        isOpen={isAdminPanelOpen && canAccessOperations}
         onClose={() => setIsAdminPanelOpen(false)}
-        onLogout={handleAdminLogout}
+        onLogout={handleLogoutAll}
+        adminEmail={sessionAccount?.email || currentUser?.email || ADMIN_BOOTSTRAP_EMAIL}
+        sessionAccount={sessionAccount}
+        isFirebaseAdmin={isFirebaseAdmin}
+        authToken={authToken}
         products={products}
-        shopifyConfig={shopifyConfig}
-        syncLogs={syncLogs}
-        onUpdateStock={handleUpdateStock}
-        onAddStock={handleAddStock}
+        orders={combinedOrders}
+        stockAlarms={combinedAlarms}
+        shopifyConfig={activeShopifyConfig}
+        syncLogs={activeSyncLogs}
         onBatchRestock={handleBatchRestock}
         onCreateProduct={handleCreateProduct}
+        onUpdateProductVariantsAndStock={handleUpdateProductVariantsAndStock}
         onDeleteProduct={handleDeleteProduct}
+        onSendStockAlarm={handleSendStockAlarm}
+        onAcknowledgeAlarm={handleAcknowledgeAlarm}
+        onDeleteAlarm={handleDeleteAlarm}
+        onDispatchOrder={handleDispatchOrder}
         onTriggerSync={handleTriggerSync}
         onSaveShopifyConfig={async (cfg) => {
           setShopifyConfig(cfg);
-          await saveShopifyConfigInFirestore(cfg);
-          showToast('Shopify integration configuration saved to Firestore');
+          if (isCustomOpsUser && authToken) {
+            await saveShopifyConfigOnServerApi(authToken, cfg);
+            await refreshServerOperations(authToken);
+          }
+          if (isFirebaseAdmin) {
+            await saveShopifyConfigInFirestore(cfg);
+          }
+          showToast('Integration configuration saved');
         }}
         onTriggerWebhook={handleTriggerWebhook}
       />
 
-      {/* Footer - No Shopify mentions */}
+      <CustomerProfileOrdersModal
+        isOpen={isOrderHistoryOpen}
+        onClose={() => setIsOrderHistoryOpen(false)}
+        currentUser={currentUser}
+        sessionAccount={sessionAccount}
+        authToken={authToken}
+        onOpenLoginModal={(mode = 'login') => handleOpenLogin(mode)}
+        onLogoutAll={handleLogoutAll}
+        onTrackOrder={(orderNum) => {
+          setTrackingOrderNumber(orderNum);
+          setIsOrderTrackerOpen(true);
+        }}
+        onExploreCollection={scrollToCollection}
+      />
+
       <Footer
-        onOpenAdmin={handleOpenAdmin}
+        onOpenLogin={() => handleOpenLogin('login')}
         onOpenOrderTracker={() => setIsOrderTrackerOpen(true)}
+        onOpenOrderHistory={() => setIsOrderHistoryOpen(true)}
         onOpenSpecials={scrollToPromotions}
       />
     </div>

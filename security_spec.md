@@ -14,8 +14,10 @@
 3. **Atomic Relational Consistency**:
    - An `/orders/{orderId}` document cannot be created without atomically creating `/orders/{orderId}/private/shipping` and `/tracking/{orderNumber}` in the same Firestore `WriteBatch` (enforced via `existsAfter` and `getAfter`).
 
-4. **Inventory & Catalog Protection**:
-   - Public storefront visitors may read `/products` and `/promotions`, but only verified Admins may create, update, or delete catalog SKUs, adjust stock counts, manage `/promotions`, configure `/integrations/shopify`, or read/write `/syncLogs`.
+4. **Inventory, Variant & Alarm Protection**:
+   - Public storefront visitors may read `/products` and `/promotions`, but only verified Admins may create, update, or delete catalog SKUs, adjust per-size stock counts (`stockBySize`), update `stockFloor`/`stockCeiling`, manage `/promotions`, configure `/integrations/shopify`, read/write `/syncLogs`, or read/write `/stockAlarms`.
+   - `stockBySize` maps are strictly allowlisted to `['XS', 'S', 'M', 'L', 'XL', 'XXL']` with bounded numeric counts; `stockCeiling >= stockFloor` is enforced on every write.
+   - Order dispatch updates (`status`, `dispatchCourier`, `trackingNumber`, `dispatchNotes`, `dispatchedAt`, `stockDeducted`) and shipment checkpoint transitions are strictly restricted to verified Admins.
 
 5. **Temporal & Structural Integrity**:
    - `createdAt` and `updatedAt` MUST equal `request.time` on creation; `createdAt` is immutable on update and `updatedAt` MUST equal `request.time`.

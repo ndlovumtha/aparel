@@ -1,12 +1,14 @@
 import React, { useState, useMemo } from 'react';
 import { Product } from '../types/store';
 import { ProductCard } from './ProductCard';
-import { Filter, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Filter, Search, X } from 'lucide-react';
 
 interface ProductGridProps {
   products: Product[];
   onSelectProduct: (product: Product) => void;
   onQuickAdd: (product: Product) => void;
+  searchQuery?: string;
+  onClearSearch?: () => void;
 }
 
 type DisciplineFilter = 'All' | 'Track & Field' | 'Pitch & Field' | 'Endurance' | 'Recovery';
@@ -15,20 +17,28 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
   products,
   onSelectProduct,
   onQuickAdd,
+  searchQuery = '',
+  onClearSearch,
 }) => {
   const [selectedDiscipline, setSelectedDiscipline] = useState<DisciplineFilter>('All');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [sortBy, setSortBy] = useState<'featured' | 'price-asc' | 'price-desc' | 'weight'>('featured');
 
   const disciplines: DisciplineFilter[] = ['All', 'Track & Field', 'Pitch & Field', 'Endurance', 'Recovery'];
-  const categories = ['All', 'Tops', 'Bottoms', 'Outerwear'];
+  const categories = ['All', 'Tops', 'Bottoms', 'Outerwear', 'Accessories'];
+
+  const normalizedQuery = searchQuery.trim().toLowerCase();
 
   const filteredProducts = useMemo(() => {
     return products
       .filter((p) => {
         const matchesDiscipline = selectedDiscipline === 'All' || p.discipline === selectedDiscipline;
         const matchesCategory = selectedCategory === 'All' || p.category === selectedCategory;
-        return matchesDiscipline && matchesCategory;
+        const matchesSearch =
+          !normalizedQuery ||
+          p.title.toLowerCase().includes(normalizedQuery) ||
+          p.category.toLowerCase().includes(normalizedQuery);
+        return matchesDiscipline && matchesCategory && matchesSearch;
       })
       .sort((a, b) => {
         if (sortBy === 'price-asc') return a.price - b.price;
@@ -36,7 +46,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
         if (sortBy === 'weight') return a.weightGsm - b.weightGsm;
         return (b.featured ? 1 : 0) - (a.featured ? 1 : 0);
       });
-  }, [products, selectedDiscipline, selectedCategory, sortBy]);
+  }, [products, selectedDiscipline, selectedCategory, sortBy, normalizedQuery]);
 
   return (
     <section id="collection" className="bg-[#0b0c0e] py-16 px-6 border-b border-[#1b1f28]">
@@ -119,16 +129,45 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
           </div>
         </div>
 
+        {/* Active Search Feedback Bar */}
+        {normalizedQuery && (
+          <div className="mb-6 px-4 py-2.5 bg-[#12161f] border border-[#242c3c] flex items-center justify-between text-xs font-mono">
+            <div className="flex items-center gap-2 text-slate-300">
+              <Search className="w-3.5 h-3.5 text-[#ccff00]" />
+              <span>
+                Filtering catalog for{' '}
+                <span className="text-[#ccff00] font-bold">"{searchQuery.trim()}"</span> (
+                {filteredProducts.length} {filteredProducts.length === 1 ? 'result' : 'results'})
+              </span>
+            </div>
+            {onClearSearch && (
+              <button
+                type="button"
+                onClick={onClearSearch}
+                className="text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Clear</span>
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Product Grid */}
         {filteredProducts.length === 0 ? (
           <div className="py-20 text-center border border-dashed border-[#232934] bg-[#0f1217]">
-            <p className="text-slate-400 text-sm mb-3">No technical gear found matching active filters.</p>
+            <p className="text-slate-400 text-sm mb-3">
+              {normalizedQuery
+                ? `No technical gear found matching "${searchQuery.trim()}".`
+                : 'No technical gear found matching active filters.'}
+            </p>
             <button
               onClick={() => {
                 setSelectedDiscipline('All');
                 setSelectedCategory('All');
+                onClearSearch?.();
               }}
-              className="px-4 py-2 bg-white text-black text-xs font-semibold uppercase tracking-wider"
+              className="px-4 py-2 bg-white text-black text-xs font-semibold uppercase tracking-wider cursor-pointer"
             >
               Reset Filters
             </button>

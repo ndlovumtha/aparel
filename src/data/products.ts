@@ -7,7 +7,8 @@ export const INITIAL_PRODUCTS: Product[] = [
     title: 'AeroCarbon Pro Stealth Jersey',
     handle: 'aerocarbon-pro-stealth-jersey',
     tagline: 'Sub-90g Aerodynamic Matchday Top',
-    description: 'Engineered for relentless high-output competition. Features our proprietary micro-perforated AeroCarbon matrix with ultrasonically bonded ultrasonic seams that eradicate friction against the torso.',
+    description:
+      'Engineered for relentless high-output competition. Features our proprietary micro-perforated AeroCarbon matrix with ultrasonically bonded ultrasonic seams that eradicate friction against the torso.',
     price: 135,
     compareAtPrice: 155,
     currency: 'USD',
@@ -22,6 +23,9 @@ export const INITIAL_PRODUCTS: Product[] = [
     ],
     inStock: true,
     inventoryQuantity: 28,
+    stockBySize: { XS: 4, S: 6, M: 8, L: 6, XL: 4 },
+    stockFloor: 10,
+    stockCeiling: 60,
     weightGsm: 88,
     fabricSpecs: {
       composition: '78% Recycled Micro-Polyamide, 22% Elastane',
@@ -29,7 +33,8 @@ export const INITIAL_PRODUCTS: Product[] = [
       seamType: 'Ultrasonic Thermo-Bonded (Zero-Chafe)',
       breathabilityRating: '1,450 g/m²/24h',
     },
-    athleteFitNotes: 'Pro race cut. Sits snug across chest and lats to eliminate aerodynamic drag. If between sizes, size up for training fit.',
+    athleteFitNotes:
+      'Pro race cut. Sits snug across chest and lats to eliminate aerodynamic drag. If between sizes, size up for training fit.',
     featured: true,
   },
   {
@@ -38,7 +43,8 @@ export const INITIAL_PRODUCTS: Product[] = [
     title: 'VaporWeave Minimalist Warmup Jacket',
     handle: 'vaporweave-minimalist-warmup-jacket',
     tagline: 'Ultralight Stormproof Pre-Match Shell',
-    description: 'Crafted for pre-competition focus and trackside warmups. 3-layer laminated barrier deflects wind and precipitation without trapping body heat during explosive strides.',
+    description:
+      'Crafted for pre-competition focus and trackside warmups. 3-layer laminated barrier deflects wind and precipitation without trapping body heat during explosive strides.',
     price: 245,
     compareAtPrice: 280,
     currency: 'USD',
@@ -53,6 +59,9 @@ export const INITIAL_PRODUCTS: Product[] = [
     ],
     inStock: true,
     inventoryQuantity: 19,
+    stockBySize: { S: 3, M: 5, L: 6, XL: 3, XXL: 2 },
+    stockFloor: 10,
+    stockCeiling: 50,
     weightGsm: 140,
     fabricSpecs: {
       composition: '100% Japanese Nano-Ripstop HydroZero™ Membrane',
@@ -60,7 +69,8 @@ export const INITIAL_PRODUCTS: Product[] = [
       seamType: 'Fully Taped 8mm Micro-Seams',
       breathabilityRating: '25,000 g/m²/24h MVTR',
     },
-    athleteFitNotes: 'Tailored athletic silhouette with articulated elbows and dropped rear hem for sprint postures.',
+    athleteFitNotes:
+      'Tailored athletic silhouette with articulated elbows and dropped rear hem for sprint postures.',
     featured: true,
   },
   {
@@ -69,7 +79,8 @@ export const INITIAL_PRODUCTS: Product[] = [
     title: 'Apex Kinetic Compression Shorts',
     handle: 'apex-kinetic-compression-shorts',
     tagline: 'Targeted Quad & Hamstring Stabilization',
-    description: 'Graduated muscular compression shorts built to minimize oscillatory micro-tears during decelerations and rapid directional cuts on the pitch.',
+    description:
+      'Graduated muscular compression shorts built to minimize oscillatory micro-tears during decelerations and rapid directional cuts on the pitch.',
     price: 110,
     currency: 'USD',
     category: 'Bottoms',
@@ -83,6 +94,9 @@ export const INITIAL_PRODUCTS: Product[] = [
     ],
     inStock: true,
     inventoryQuantity: 42,
+    stockBySize: { XS: 6, S: 9, M: 12, L: 9, XL: 6 },
+    stockFloor: 12,
+    stockCeiling: 80,
     weightGsm: 210,
     fabricSpecs: {
       composition: '64% Warp-Knit High-Tension Nylon, 36% Spandex',
@@ -90,7 +104,8 @@ export const INITIAL_PRODUCTS: Product[] = [
       seamType: 'Ergonomic 4-Needle Flatlock Mapping',
       breathabilityRating: 'High-Velocity Air Permeability',
     },
-    athleteFitNotes: 'High compression factor (22-26 mmHg). Ergonomic contour cradles pelvic alignment and stabilizes IT band.',
+    athleteFitNotes:
+      'High compression factor (22-26 mmHg). Ergonomic contour cradles pelvic alignment and stabilizes IT band.',
     featured: true,
   },
   {
@@ -99,7 +114,8 @@ export const INITIAL_PRODUCTS: Product[] = [
     title: 'Shift 5" Aerodynamic Running Short',
     handle: 'shift-5-aerodynamic-running-short',
     tagline: 'Split-Hem Speed Short with Zero Bounce',
-    description: 'Engineered for maximal stride extension. Laser-perforated lumbar ventilation band, bonded raw-cut hems, and an internal phone/energy gel bay that locks flush against the sacrum.',
+    description:
+      'Engineered for maximal stride extension. Laser-perforated lumbar ventilation band, bonded raw-cut hems, and an internal phone/energy gel bay that locks flush against the sacrum.',
     price: 95,
     compareAtPrice: 115,
     currency: 'USD',
@@ -114,6 +130,9 @@ export const INITIAL_PRODUCTS: Product[] = [
     ],
     inStock: true,
     inventoryQuantity: 34,
+    stockBySize: { S: 7, M: 11, L: 10, XL: 6 },
+    stockFloor: 10,
+    stockCeiling: 70,
     weightGsm: 95,
     fabricSpecs: {
       composition: '88% Recycled Poly, 12% 4-Way Stretch Elastane',
@@ -121,7 +140,8 @@ export const INITIAL_PRODUCTS: Product[] = [
       seamType: 'Ultrasonic Bonded Raw-Cut Hem',
       breathabilityRating: '1,800 g/m²/24h',
     },
-    athleteFitNotes: '5-inch inseam with deep side split for uninhibited hip flexion during 400m intervals or sprint drills.',
+    athleteFitNotes:
+      '5-inch inseam with deep side split for uninhibited hip flexion during 400m intervals or sprint drills.',
     featured: false,
   },
   {
@@ -130,7 +150,8 @@ export const INITIAL_PRODUCTS: Product[] = [
     title: 'ThermoRegulate Baseline Crew',
     handle: 'thermoregulate-baseline-crew',
     tagline: '17.5-Micron Merino-Poly Matrix',
-    description: 'An elite dual-knit baselayer combining natural Australian merino wool against the skin for thermal homeostasis with exterior synthetic filaments for moisture dispersal.',
+    description:
+      'An elite dual-knit baselayer combining natural Australian merino wool against the skin for thermal homeostasis with exterior synthetic filaments for moisture dispersal.',
     price: 120,
     currency: 'USD',
     category: 'Tops',
@@ -144,6 +165,9 @@ export const INITIAL_PRODUCTS: Product[] = [
     ],
     inStock: true,
     inventoryQuantity: 21,
+    stockBySize: { S: 4, M: 6, L: 6, XL: 3, XXL: 2 },
+    stockFloor: 10,
+    stockCeiling: 60,
     weightGsm: 165,
     fabricSpecs: {
       composition: '52% 17.5µ Non-Mulesed Merino Wool, 48% Recycled Poly',
@@ -151,7 +175,8 @@ export const INITIAL_PRODUCTS: Product[] = [
       seamType: 'ActiveSeam™ Flexible Flat Seams',
       breathabilityRating: 'Dynamic Moisture Buffer',
     },
-    athleteFitNotes: 'Second-skin anatomical baseline fit. Retains warming properties even when saturated with sweat in sub-zero training.',
+    athleteFitNotes:
+      'Second-skin anatomical baseline fit. Retains warming properties even when saturated with sweat in sub-zero training.',
     featured: false,
   },
   {
@@ -160,7 +185,8 @@ export const INITIAL_PRODUCTS: Product[] = [
     title: 'Podium Post-Match Recovery Pant',
     handle: 'podium-post-match-recovery-pant',
     tagline: 'High-Gauge Architectural Travel Knit',
-    description: 'Designed for the hours between competition and recovery. Heavyweight technical French terry with an architectural taper that maintains clean lines on team flights and press conferences.',
+    description:
+      'Designed for the hours between competition and recovery. Heavyweight technical French terry with an architectural taper that maintains clean lines on team flights and press conferences.',
     price: 165,
     currency: 'USD',
     category: 'Bottoms',
@@ -174,6 +200,9 @@ export const INITIAL_PRODUCTS: Product[] = [
     ],
     inStock: true,
     inventoryQuantity: 15,
+    stockBySize: { S: 3, M: 5, L: 4, XL: 3 },
+    stockFloor: 10,
+    stockCeiling: 50,
     weightGsm: 340,
     fabricSpecs: {
       composition: '70% Compact Long-Staple Cotton, 30% Polyamide Reinforcement',
@@ -181,7 +210,8 @@ export const INITIAL_PRODUCTS: Product[] = [
       seamType: 'Darted Knee Architecture & Concealed YKK Aquaguard Zips',
       breathabilityRating: 'Breathable Heavyweight Comfort',
     },
-    athleteFitNotes: 'Structured relaxed thigh transitioning into a clean ankle taper with concealed ankle zips for shoe clearance.',
+    athleteFitNotes:
+      'Structured relaxed thigh transitioning into a clean ankle taper with concealed ankle zips for shoe clearance.',
     featured: false,
   },
 ];

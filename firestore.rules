@@ -37,6 +37,17 @@ service cloud.firestore {
         (isVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
     }
 
+    function isValidStockBySizeMap(stockMap) {
+      return stockMap is map
+        && stockMap.keys().hasOnly(['XS', 'S', 'M', 'L', 'XL', 'XXL'])
+        && (!('XS' in stockMap) || (stockMap.XS is number && stockMap.XS >= 0 && stockMap.XS <= 100000))
+        && (!('S' in stockMap) || (stockMap.S is number && stockMap.S >= 0 && stockMap.S <= 100000))
+        && (!('M' in stockMap) || (stockMap.M is number && stockMap.M >= 0 && stockMap.M <= 100000))
+        && (!('L' in stockMap) || (stockMap.L is number && stockMap.L >= 0 && stockMap.L <= 100000))
+        && (!('XL' in stockMap) || (stockMap.XL is number && stockMap.XL >= 0 && stockMap.XL <= 100000))
+        && (!('XXL' in stockMap) || (stockMap.XXL is number && stockMap.XXL >= 0 && stockMap.XXL <= 100000));
+    }
+
     // 3. Entity Validation Blueprints (Anti-Update-Gap)
 
     function isValidProduct(data) {
@@ -50,7 +61,8 @@ service cloud.firestore {
           'shopifyId', 'title', 'handle', 'tagline', 'description',
           'price', 'compareAtPrice', 'currency', 'category', 'discipline',
           'image', 'detailImage', 'sizes', 'colors', 'inStock',
-          'inventoryQuantity', 'weightGsm', 'fabricSpecs', 'athleteFitNotes',
+          'inventoryQuantity', 'stockBySize', 'stockFloor', 'stockCeiling',
+          'weightGsm', 'fabricSpecs', 'athleteFitNotes',
           'featured', 'createdAt', 'updatedAt'
         ])
         && data.shopifyId is string && data.shopifyId.size() >= 1 && data.shopifyId.size() <= 128
@@ -68,9 +80,13 @@ service cloud.firestore {
         && data.sizes is list && data.sizes.size() >= 1 && data.sizes.size() <= 6
         && data.sizes.hasOnly(['XS', 'S', 'M', 'L', 'XL', 'XXL'])
         && data.colors is list && data.colors.size() >= 1 && data.colors.size() <= 6
-        && data.colors[0] is map && data.colors[0].name is string && data.colors[0].name.size() <= 60 && data.colors[0].hex is string && data.colors[0].hex.size() <= 20
+        && data.colors[0] is map && data.colors[0].name is string && data.colors[0].name.size() >= 1 && data.colors[0].name.size() <= 60 && data.colors[0].hex is string && data.colors[0].hex.size() >= 4 && data.colors[0].hex.size() <= 20
         && data.inStock is bool
         && data.inventoryQuantity is number && data.inventoryQuantity >= 0 && data.inventoryQuantity <= 1000000
+        && (!('stockBySize' in data) || isValidStockBySizeMap(data.stockBySize))
+        && (!('stockFloor' in data) || (data.stockFloor is number && data.stockFloor >= 0 && data.stockFloor <= 100000))
+        && (!('stockCeiling' in data) || (data.stockCeiling is number && data.stockCeiling >= 1 && data.stockCeiling <= 1000000))
+        && (!('stockFloor' in data) || !('stockCeiling' in data) || data.stockCeiling >= data.stockFloor)
         && data.weightGsm is number && data.weightGsm >= 10 && data.weightGsm <= 2000
         && data.fabricSpecs is map
         && data.fabricSpecs.keys().hasAll(['composition', 'treatment', 'seamType', 'breathabilityRating'])
@@ -124,7 +140,8 @@ service cloud.firestore {
           'orderNumber', 'userId', 'shopifyOrderRef', 'date', 'items',
           'shippingMethod', 'paymentMethod', 'discountCode', 'discountPercentage',
           'subtotal', 'discountAmount', 'shippingAmount', 'taxAmount', 'total',
-          'estimatedDelivery', 'status', 'createdAt', 'updatedAt'
+          'estimatedDelivery', 'status', 'dispatchCourier', 'trackingNumber',
+          'dispatchNotes', 'dispatchedAt', 'stockDeducted', 'createdAt', 'updatedAt'
         ])
         && data.orderNumber is string && data.orderNumber.size() >= 3 && data.orderNumber.size() <= 32 && data.orderNumber.matches('^OF-[0-9A-Z]+$')
         && data.userId is string && isValidId(data.userId)
@@ -147,6 +164,11 @@ service cloud.firestore {
         && data.total is number && data.total >= 0
         && data.estimatedDelivery is string && data.estimatedDelivery.size() >= 2 && data.estimatedDelivery.size() <= 40
         && data.status in ['Confirmed', 'Preparing Shipment', 'Dispatched', 'Delivered']
+        && (!('dispatchCourier' in data) || (data.dispatchCourier is string && data.dispatchCourier.size() <= 100))
+        && (!('trackingNumber' in data) || (data.trackingNumber is string && data.trackingNumber.size() <= 64))
+        && (!('dispatchNotes' in data) || (data.dispatchNotes is string && data.dispatchNotes.size() <= 300))
+        && (!('dispatchedAt' in data) || (data.dispatchedAt is string && data.dispatchedAt.size() <= 64))
+        && (!('stockDeducted' in data) || data.stockDeducted is bool)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -246,6 +268,31 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    function isValidStockAlarm(data) {
+      return data.keys().hasAll([
+          'productId', 'productTitle', 'alarmType', 'triggerScope',
+          'currentQuantity', 'threshold', 'acknowledged', 'recipientEmail',
+          'message', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'productId', 'productTitle', 'alarmType', 'triggerScope',
+          'size', 'currentQuantity', 'threshold', 'acknowledged',
+          'recipientEmail', 'message', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.productId)
+        && data.productTitle is string && data.productTitle.size() >= 1 && data.productTitle.size() <= 120
+        && data.alarmType in ['BELOW_FLOOR', 'ABOVE_CEILING', 'OUT_OF_STOCK']
+        && data.triggerScope in ['total', 'size']
+        && (!('size' in data) || (data.size is string && data.size.size() <= 8 && data.size in ['XS', 'S', 'M', 'L', 'XL', 'XXL']))
+        && data.currentQuantity is number && data.currentQuantity >= 0 && data.currentQuantity <= 1000000
+        && data.threshold is number && data.threshold >= 0 && data.threshold <= 1000000
+        && data.acknowledged is bool
+        && data.recipientEmail is string && data.recipientEmail.size() >= 3 && data.recipientEmail.size() <= 160
+        && data.message is string && data.message.size() >= 2 && data.message.size() <= 500
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // 4. Collection Rules
 
     // Startup connectivity check endpoint (single read-only document, zero PII)
@@ -272,8 +319,8 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'title', 'tagline', 'description', 'price', 'compareAtPrice',
           'category', 'discipline', 'image', 'detailImage', 'sizes', 'colors',
-          'inStock', 'inventoryQuantity', 'weightGsm', 'fabricSpecs',
-          'athleteFitNotes', 'featured', 'updatedAt'
+          'inStock', 'inventoryQuantity', 'stockBySize', 'stockFloor', 'stockCeiling',
+          'weightGsm', 'fabricSpecs', 'athleteFitNotes', 'featured', 'updatedAt'
         ])
         && isAdmin();
       allow delete: if isVerified() && isValidId(productId) && isAdmin();
@@ -324,7 +371,10 @@ service cloud.firestore {
         && incoming().orderNumber == existing().orderNumber
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'dispatchCourier', 'trackingNumber', 'dispatchNotes',
+          'dispatchedAt', 'stockDeducted', 'updatedAt'
+        ])
         && isAdmin();
       allow delete: if false;
 
@@ -363,7 +413,9 @@ service cloud.firestore {
         && incoming().orderNumber == existing().orderNumber
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['currentStatus', 'checkpoints', 'updatedAt'])
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'currentStatus', 'courier', 'trackingNumber', 'checkpoints', 'updatedAt'
+        ])
         && isAdmin();
       allow delete: if false;
     }
@@ -411,6 +463,26 @@ service cloud.firestore {
         && incoming().createdAt == request.time
         && isAdmin();
       allow update, delete: if false;
+    }
+
+    // Inventory Floor & Ceiling Alarms (Admin-only)
+    match /stockAlarms/{alarmId} {
+      allow get: if isVerified() && isValidId(alarmId) && isAdmin();
+      allow list: if isBootstrappedAdminEmail();
+      allow create: if isVerified()
+        && isValidId(alarmId)
+        && isValidStockAlarm(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isAdmin();
+      allow update: if isVerified()
+        && isValidId(alarmId)
+        && isValidStockAlarm(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['acknowledged', 'updatedAt'])
+        && isAdmin();
+      allow delete: if isVerified() && isValidId(alarmId) && isAdmin();
     }
   }
 }

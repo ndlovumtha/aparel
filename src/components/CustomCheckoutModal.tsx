@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User, signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
-import { CartItem, CheckoutCustomerInfo, ConfirmedOrder } from '../types/store';
+import { CartItem, CheckoutCustomerInfo, ConfirmedOrder, SessionAccount } from '../types/store';
 import {
   X,
   CheckCircle2,
@@ -24,6 +24,8 @@ interface CustomCheckoutModalProps {
   discountPercentage: number;
   discountCode: string;
   currentUser: User | null;
+  sessionAccount: SessionAccount | null;
+  onOpenLoginModal: (mode?: 'login' | 'signup') => void;
   onProcessOrder: (customer: CheckoutCustomerInfo) => Promise<ConfirmedOrder>;
   onOrderSuccess: () => void;
   onTrackOrder?: (orderNumber: string) => void;
@@ -36,6 +38,8 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
   discountPercentage,
   discountCode,
   currentUser,
+  sessionAccount,
+  onOpenLoginModal,
   onProcessOrder,
   onOrderSuccess,
   onTrackOrder,
@@ -72,11 +76,13 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setCheckoutError(null);
-      if (currentUser?.email) {
-        const nameParts = (currentUser.displayName || '').trim().split(/\s+/);
+      const emailToUse = currentUser?.email || sessionAccount?.email || '';
+      const fullNameToUse = currentUser?.displayName || sessionAccount?.fullName || '';
+      if (emailToUse || fullNameToUse) {
+        const nameParts = fullNameToUse.trim().split(/\s+/);
         setFormData((prev) => ({
           ...prev,
-          email: prev.email || currentUser.email || '',
+          email: prev.email || emailToUse,
           firstName: prev.firstName || nameParts[0] || '',
           lastName: prev.lastName || (nameParts.length > 1 ? nameParts.slice(1).join(' ') : ''),
           discountCode: discountCode || prev.discountCode,
@@ -84,7 +90,7 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
         }));
       }
     }
-  }, [isOpen, currentUser, discountCode, discountPercentage]);
+  }, [isOpen, currentUser, sessionAccount, discountCode, discountPercentage]);
 
   if (!isOpen) return null;
 
@@ -148,13 +154,13 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
 
   const handleSubmitPayment = async () => {
     setCheckoutError(null);
-    let activeUser = currentUser || auth.currentUser;
-    if (!activeUser || !activeUser.emailVerified) {
-      activeUser = await handleGoogleSignInForCheckout();
-      if (!activeUser) {
-        setCheckoutError('Please sign in with Google to save your order to the database.');
-        return;
-      }
+    const activeFirebaseUser = currentUser || auth.currentUser;
+    const isAuthenticated = Boolean(
+      sessionAccount || (activeFirebaseUser && activeFirebaseUser.emailVerified)
+    );
+    if (!isAuthenticated) {
+      setCheckoutError('Please log in, create an account, or sign in with Google to save and track your order.');
+      return;
     }
 
     setIsSubmitting(true);
@@ -671,26 +677,37 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
                   <ShieldCheck className="w-4 h-4 text-[#ccff00] shrink-0 mt-0.5" />
                   <div>
                     <p className="font-bold text-white uppercase tracking-tight">
-                      {currentUser && currentUser.emailVerified
+                      {sessionAccount || (currentUser && currentUser.emailVerified)
                         ? 'Verified Athlete Account Linked'
-                        : 'Google Verification Required to Save Order'}
+                        : 'Account Login Required to Save & Track Order'}
                     </p>
                     <p className="text-slate-400 font-mono text-[11px] mt-0.5">
-                      {currentUser && currentUser.emailVerified
+                      {sessionAccount
+                        ? `Signed in as @${sessionAccount.username} (${sessionAccount.email}) — receipt & shipment tracking synced.`
+                        : currentUser && currentUser.emailVerified
                         ? `Signed in as ${currentUser.email} — receipt & shipment tracking synced to database.`
-                        : 'Sign in with Google to bind your order receipt & live shipment tracker securely.'}
+                        : 'Log in, sign up for a customer account, or use Google Sign-In to track your shipment.'}
                     </p>
                   </div>
                 </div>
-                {(!currentUser || !currentUser.emailVerified) && (
-                  <button
-                    type="button"
-                    onClick={handleGoogleSignInForCheckout}
-                    disabled={isSigningIn}
-                    className="px-4 py-2 bg-[#1c2330] hover:bg-[#263042] border border-[#ccff00]/50 text-[#ccff00] font-mono font-bold uppercase text-[11px] tracking-wider transition-colors shrink-0 cursor-pointer disabled:opacity-50"
-                  >
-                    {isSigningIn ? 'Connecting...' : 'Sign in with Google'}
-                  </button>
+                {!sessionAccount && (!currentUser || !currentUser.emailVerified) && (
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => onOpenLoginModal('login')}
+                      className="px-3.5 py-2 bg-[#ccff00] hover:bg-[#b8e600] text-black font-mono font-bold uppercase text-[11px] tracking-wider transition-colors cursor-pointer"
+                    >
+                      Login / Sign Up
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGoogleSignInForCheckout}
+                      disabled={isSigningIn}
+                      className="px-3.5 py-2 bg-[#1c2330] hover:bg-[#263042] border border-[#ccff00]/50 text-[#ccff00] font-mono font-bold uppercase text-[11px] tracking-wider transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {isSigningIn ? 'Connecting...' : 'Google Sign-In'}
+                    </button>
+                  </div>
                 )}
               </div>
 

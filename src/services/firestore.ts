@@ -24,17 +24,34 @@ import {
   handleFirestoreError,
 } from '../lib/firebase';
 import {
+  ALL_GARMENT_SIZES,
+  GarmentSize,
   Product,
   ShopifyConfig,
   SyncLogEntry,
   CartItem,
   CheckoutCustomerInfo,
   ConfirmedOrder,
+  OrderStatus,
   ShipmentStatus,
   ShipmentTrackingRecord,
+  StockAlarm,
+  StockAlarmType,
   TrackingCheckpoint,
+  CustomerOrderItem,
+  CustomerOrderRecord,
+  OrderPrivateShippingInfo,
 } from '../types/store';
+export type { CustomerOrderItem, CustomerOrderRecord, OrderPrivateShippingInfo };
 import { INITIAL_PRODUCTS } from '../data/products';
+import {
+  DEFAULT_STOCK_CEILING,
+  DEFAULT_STOCK_FLOOR,
+  getEffectiveStockMap,
+  getProductCeiling,
+  getProductFloor,
+  getTotalFromStockMap,
+} from '../utils/inventory';
 
 export interface FirestorePromotion {
   id: string;
@@ -143,6 +160,51 @@ const toSafeId = (raw: string): string => {
   return (clean || `id-${Date.now()}`).slice(0, 128);
 };
 
+function sanitizeSizes(rawSizes: GarmentSize[] | undefined): GarmentSize[] {
+  const filtered = (rawSizes || ['M', 'L']).filter((s): s is GarmentSize =>
+    ALL_GARMENT_SIZES.includes(s)
+  );
+  return filtered.length > 0 ? Array.from(new Set(filtered)).slice(0, 6) : ['M'];
+}
+
+function sanitizeColors(
+  rawColors: { name: string; hex: string }[] | undefined
+): { name: string; hex: string }[] {
+  const cleaned = (rawColors || [])
+    .map((c) => ({
+      name: clampStr(c.name, 60, 'Pitch Carbon') || 'Pitch Carbon',
+      hex: /^#[0-9a-fA-F]{3,8}$/.test((c.hex || '').trim())
+        ? (c.hex || '').trim().slice(0, 20)
+        : '#0F1115',
+    }))
+    .slice(0, 6);
+  return cleaned.length > 0 ? cleaned : [{ name: 'Pitch Carbon', hex: '#0F1115' }];
+}
+
+function sanitizeStockBySize(
+  sizes: GarmentSize[],
+  rawMap?: Partial<Record<GarmentSize, number>>,
+  fallbackTotal = 0
+): Partial<Record<GarmentSize, number>> {
+  const result: Partial<Record<GarmentSize, number>> = {};
+  if (rawMap && Object.keys(rawMap).length > 0) {
+    for (const sz of sizes) {
+      result[sz] = Math.max(0, Math.min(100000, Math.floor(Number(rawMap[sz] ?? 0))));
+    }
+    return result;
+  }
+
+  const cleanTotal = Math.max(0, Math.min(100000, Math.floor(fallbackTotal)));
+  const base = Math.floor(cleanTotal / sizes.length);
+  let rem = cleanTotal % sizes.length;
+  for (const sz of sizes) {
+    const extra = rem > 0 ? 1 : 0;
+    if (rem > 0) rem -= 1;
+    result[sz] = base + extra;
+  }
+  return result;
+}
+
 export async function checkIsUserAdmin(user: User | null): Promise<boolean> {
   if (!user || !user.emailVerified) return false;
   if (user.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase()) {
@@ -170,6 +232,16 @@ export function subscribeToProducts(
       }
       const list: Product[] = snapshot.docs.map((d) => {
         const data = d.data();
+        const sizes = sanitizeSizes(data.sizes);
+        const rawStockMap =
+          data.stockBySize && typeof data.stockBySize === 'object'
+            ? (data.stockBySize as Partial<Record<GarmentSize, number>>)
+            : undefined;
+        const legacyQty = Number(data.inventoryQuantity ?? 0);
+        const totalQty = rawStockMap
+          ? getTotalFromStockMap(sizes, rawStockMap)
+          : legacyQty;
+
         return {
           id: d.id,
           shopifyId: data.shopifyId,
@@ -184,10 +256,17 @@ export function subscribeToProducts(
           discipline: data.discipline,
           image: data.image,
           detailImage: data.detailImage,
-          sizes: data.sizes || ['M', 'L'],
+          sizes,
           colors: data.colors || [{ name: 'Pitch Carbon', hex: '#0F1115' }],
-          inStock: Boolean(data.inStock),
-          inventoryQuantity: Number(data.inventoryQuantity ?? 0),
+          inStock: totalQty > 0,
+          inventoryQuantity: totalQty,
+          stockBySize: rawStockMap,
+          stockFloor:
+            typeof data.stockFloor === 'number' ? data.stockFloor : DEFAULT_STOCK_FLOOR,
+          stockCeiling:
+            typeof data.stockCeiling === 'number'
+              ? data.stockCeiling
+              : DEFAULT_STOCK_CEILING,
           weightGsm: Number(data.weightGsm ?? 100),
           fabricSpecs: data.fabricSpecs,
           athleteFitNotes: data.athleteFitNotes || '',
@@ -259,6 +338,12 @@ export async function seedDatabaseIfEmptyAsAdmin(): Promise<boolean> {
     if (prodSnap.empty) {
       hasWrites = true;
       for (const p of INITIAL_PRODUCTS) {
+        const cleanSizes = sanitizeSizes(p.sizes);
+        const stockMap = sanitizeStockBySize(cleanSizes, p.stockBySize, p.inventoryQuantity);
+        const totalQty = getTotalFromStockMap(cleanSizes, stockMap);
+        const floor = getProductFloor(p);
+        const ceiling = Math.max(floor, getProductCeiling(p));
+
         const payload: Record<string, unknown> = {
           shopifyId: clampStr(p.shopifyId, 128),
           title: clampStr(p.title, 120),
@@ -270,10 +355,13 @@ export async function seedDatabaseIfEmptyAsAdmin(): Promise<boolean> {
           category: p.category,
           discipline: p.discipline,
           image: clampStr(p.image, 500),
-          sizes: p.sizes.slice(0, 6),
-          colors: p.colors.slice(0, 6),
-          inStock: p.inventoryQuantity > 0,
-          inventoryQuantity: p.inventoryQuantity,
+          sizes: cleanSizes,
+          colors: sanitizeColors(p.colors),
+          inStock: totalQty > 0,
+          inventoryQuantity: totalQty,
+          stockBySize: stockMap,
+          stockFloor: floor,
+          stockCeiling: ceiling,
           weightGsm: p.weightGsm,
           fabricSpecs: {
             composition: clampStr(p.fabricSpecs.composition, 240),
@@ -356,6 +444,20 @@ export async function createProductInFirestore(
   const shopifyId = `gid://shopify/Product/${Math.floor(8490000000000 + Math.random() * 9000000000)}`;
   const handle = toHandle(newProductData.handle || newProductData.title);
 
+  const cleanSizes = sanitizeSizes(newProductData.sizes);
+  const cleanColors = sanitizeColors(newProductData.colors);
+  const stockBySize = sanitizeStockBySize(
+    cleanSizes,
+    newProductData.stockBySize,
+    Number(newProductData.inventoryQuantity) || 0
+  );
+  const totalQty = getTotalFromStockMap(cleanSizes, stockBySize);
+  const floor = Math.max(0, Math.min(100000, Math.floor(Number(newProductData.stockFloor ?? DEFAULT_STOCK_FLOOR))));
+  const ceiling = Math.max(
+    Math.max(1, floor),
+    Math.min(1000000, Math.floor(Number(newProductData.stockCeiling ?? DEFAULT_STOCK_CEILING)))
+  );
+
   const payload: Record<string, unknown> = {
     shopifyId,
     title: clampStr(newProductData.title, 120, 'Technical Garment'),
@@ -367,10 +469,13 @@ export async function createProductInFirestore(
     category: newProductData.category,
     discipline: newProductData.discipline,
     image: clampStr(newProductData.image, 500, '/src/assets/images/product_stealth_jersey_1793037645515.jpg'),
-    sizes: newProductData.sizes.slice(0, 6),
-    colors: newProductData.colors.slice(0, 6),
-    inStock: Number(newProductData.inventoryQuantity) > 0,
-    inventoryQuantity: Math.max(0, Math.floor(Number(newProductData.inventoryQuantity) || 0)),
+    sizes: cleanSizes,
+    colors: cleanColors,
+    inStock: totalQty > 0,
+    inventoryQuantity: totalQty,
+    stockBySize,
+    stockFloor: floor,
+    stockCeiling: ceiling,
     weightGsm: Math.max(10, Math.min(2000, Number(newProductData.weightGsm) || 100)),
     fabricSpecs: {
       composition: clampStr(newProductData.fabricSpecs.composition, 240, 'Technical Synthetics'),
@@ -395,24 +500,97 @@ export async function createProductInFirestore(
     await setDoc(doc(db, 'products', id), payload);
     await appendSyncLogInFirestore({
       event: 'ADMIN_PRODUCT_CREATED',
-      details: `Created "${payload.title}" in Firestore (Initial Stock: ${payload.inventoryQuantity}).`,
+      details: `Created "${payload.title}" (${cleanSizes.length} sizes, ${cleanColors.length} colors, Stock: ${totalQty}, Floor: ${floor}, Ceiling: ${ceiling}).`,
       status: 'success',
     });
+
+    await checkAndEmitStockAlarmIfBreached({
+      productId: id,
+      productTitle: String(payload.title),
+      totalQty,
+      floor,
+      ceiling,
+    });
+
     return id;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
 }
 
+export async function updateProductVariantsAndStockInFirestore(
+  product: Product,
+  updates: {
+    sizes?: GarmentSize[];
+    colors?: { name: string; hex: string }[];
+    stockBySize?: Partial<Record<GarmentSize, number>>;
+    stockFloor?: number;
+    stockCeiling?: number;
+  }
+): Promise<void> {
+  const path = `products/${product.id}`;
+  const nextSizes = sanitizeSizes(updates.sizes ?? product.sizes);
+  const nextColors = sanitizeColors(updates.colors ?? product.colors);
+  const currentMap = getEffectiveStockMap(product);
+  const nextStockMap = sanitizeStockBySize(nextSizes, updates.stockBySize ?? currentMap, product.inventoryQuantity);
+  const nextTotal = getTotalFromStockMap(nextSizes, nextStockMap);
+
+  const nextFloor = Math.max(
+    0,
+    Math.min(100000, Math.floor(updates.stockFloor ?? getProductFloor(product)))
+  );
+  const nextCeiling = Math.max(
+    Math.max(1, nextFloor),
+    Math.min(1000000, Math.floor(updates.stockCeiling ?? getProductCeiling(product)))
+  );
+
+  try {
+    await updateDoc(doc(db, 'products', product.id), {
+      sizes: nextSizes,
+      colors: nextColors,
+      stockBySize: nextStockMap,
+      inventoryQuantity: nextTotal,
+      inStock: nextTotal > 0,
+      stockFloor: nextFloor,
+      stockCeiling: nextCeiling,
+      updatedAt: serverTimestamp(),
+    });
+
+    await appendSyncLogInFirestore({
+      event: 'ADMIN_VARIANT_STOCK_UPDATED',
+      details: `Updated ${product.title}: Total ${nextTotal} units across [${nextSizes.join(', ')}] (Floor ${nextFloor} / Ceiling ${nextCeiling}).`,
+      status: 'info',
+    });
+
+    await checkAndEmitStockAlarmIfBreached({
+      productId: product.id,
+      productTitle: product.title,
+      totalQty: nextTotal,
+      floor: nextFloor,
+      ceiling: nextCeiling,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function updateProductStockInFirestore(
   productId: string,
-  newQuantity: number
+  newQuantity: number,
+  product?: Product
 ): Promise<void> {
   const path = `products/${productId}`;
   const clampedQty = Math.max(0, Math.min(1000000, Math.floor(newQuantity)));
+
   try {
+    const targetSizes = product ? sanitizeSizes(product.sizes) : (['M', 'L'] as GarmentSize[]);
+    const nextStockMap = sanitizeStockBySize(targetSizes, undefined, clampedQty);
+    const floor = product ? getProductFloor(product) : DEFAULT_STOCK_FLOOR;
+    const ceiling = product ? Math.max(floor, getProductCeiling(product)) : DEFAULT_STOCK_CEILING;
+
     await updateDoc(doc(db, 'products', productId), {
       inventoryQuantity: clampedQty,
+      stockBySize: nextStockMap,
       inStock: clampedQty > 0,
       updatedAt: serverTimestamp(),
     });
@@ -421,6 +599,16 @@ export async function updateProductStockInFirestore(
       details: `Firestore inventory for SKU ${productId} set to ${clampedQty} units.`,
       status: 'info',
     });
+
+    if (product) {
+      await checkAndEmitStockAlarmIfBreached({
+        productId: product.id,
+        productTitle: product.title,
+        totalQty: clampedQty,
+        floor,
+        ceiling,
+      });
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -430,14 +618,26 @@ export async function batchRestockLowItemsInFirestore(
   products: Product[],
   incrementAmount = 20
 ): Promise<number> {
-  const lowItems = products.filter((p) => p.inventoryQuantity < 10);
+  const lowItems = products.filter((p) => p.inventoryQuantity <= getProductFloor(p));
   if (lowItems.length === 0) return 0;
 
   try {
     const batch = writeBatch(db);
     for (const p of lowItems) {
-      const nextQty = Math.min(1000000, p.inventoryQuantity + incrementAmount);
+      const currentMap = getEffectiveStockMap(p);
+      const nextMap: Partial<Record<GarmentSize, number>> = { ...currentMap };
+      const perSizeAdd = Math.max(1, Math.floor(incrementAmount / p.sizes.length));
+      let extra = incrementAmount % p.sizes.length;
+
+      for (const sz of p.sizes) {
+        const add = perSizeAdd + (extra > 0 ? 1 : 0);
+        if (extra > 0) extra -= 1;
+        nextMap[sz] = Math.min(100000, (nextMap[sz] ?? 0) + add);
+      }
+
+      const nextQty = getTotalFromStockMap(p.sizes, nextMap);
       batch.update(doc(db, 'products', p.id), {
+        stockBySize: nextMap,
         inventoryQuantity: nextQty,
         inStock: true,
         updatedAt: serverTimestamp(),
@@ -446,7 +646,7 @@ export async function batchRestockLowItemsInFirestore(
     await batch.commit();
     await appendSyncLogInFirestore({
       event: 'ADMIN_BATCH_RESTOCK',
-      details: `Batch restocked ${lowItems.length} low-stock SKUs (+${incrementAmount} units each) in Firestore.`,
+      details: `Batch restocked ${lowItems.length} below-floor SKUs (+${incrementAmount} units distributed by size) in Firestore.`,
       status: 'success',
     });
     return lowItems.length;
@@ -490,6 +690,158 @@ export async function deleteProductInFirestore(productId: string, title?: string
     handleFirestoreError(error, OperationType.DELETE, path);
   }
 }
+
+// ================= STOCK ALARMS (FLOOR & CEILING) =================
+
+async function checkAndEmitStockAlarmIfBreached(params: {
+  productId: string;
+  productTitle: string;
+  totalQty: number;
+  floor: number;
+  ceiling: number;
+}): Promise<void> {
+  const { productId, productTitle, totalQty, floor, ceiling } = params;
+  let alarmType: StockAlarmType | null = null;
+  let threshold = floor;
+  let message = '';
+
+  if (totalQty === 0) {
+    alarmType = 'OUT_OF_STOCK';
+    threshold = floor;
+    message = `CRITICAL STOCKOUT: ${productTitle} has 0 units remaining (Floor: ${floor}). Immediate replenishment required.`;
+  } else if (totalQty <= floor) {
+    alarmType = 'BELOW_FLOOR';
+    threshold = floor;
+    message = `FLOOR BREACH ALARM: ${productTitle} dropped to ${totalQty} units (Floor threshold: ${floor}).`;
+  } else if (totalQty >= ceiling) {
+    alarmType = 'ABOVE_CEILING';
+    threshold = ceiling;
+    message = `CEILING BREACH ALARM: ${productTitle} reached ${totalQty} units (Ceiling limit: ${ceiling}). Halt incoming manufacturing batches.`;
+  }
+
+  if (!alarmType) return;
+
+  await sendStockAlarmInFirestore({
+    productId,
+    productTitle,
+    alarmType,
+    triggerScope: 'total',
+    currentQuantity: totalQty,
+    threshold,
+    recipientEmail: auth.currentUser?.email || ADMIN_BOOTSTRAP_EMAIL,
+    message,
+  });
+}
+
+export async function sendStockAlarmInFirestore(params: {
+  productId: string;
+  productTitle: string;
+  alarmType: StockAlarmType;
+  triggerScope: 'total' | 'size';
+  size?: GarmentSize;
+  currentQuantity: number;
+  threshold: number;
+  recipientEmail: string;
+  message: string;
+}): Promise<string> {
+  const user = auth.currentUser;
+  if (!user || !(await checkIsUserAdmin(user))) {
+    throw new Error('Admin session required to dispatch stock alarms.');
+  }
+
+  const alarmId = `alarm-${toSafeId(params.productId).slice(0, 40)}-${Date.now()}`;
+  const path = `stockAlarms/${alarmId}`;
+
+  const payload: Record<string, unknown> = {
+    productId: toSafeId(params.productId),
+    productTitle: clampStr(params.productTitle, 120, 'Product'),
+    alarmType: params.alarmType,
+    triggerScope: params.triggerScope,
+    currentQuantity: Math.max(0, Math.min(1000000, Math.floor(params.currentQuantity))),
+    threshold: Math.max(0, Math.min(1000000, Math.floor(params.threshold))),
+    acknowledged: false,
+    recipientEmail: clampStr(params.recipientEmail || ADMIN_BOOTSTRAP_EMAIL, 160),
+    message: clampStr(params.message, 500),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  if (params.size && ALL_GARMENT_SIZES.includes(params.size)) {
+    payload.size = params.size;
+  }
+
+  try {
+    await setDoc(doc(db, 'stockAlarms', alarmId), payload);
+    await appendSyncLogInFirestore({
+      event: `STOCK_ALARM_${params.alarmType}`,
+      details: `${payload.message} Dispatched to ${payload.recipientEmail}.`,
+      status: 'warning',
+    });
+    return alarmId;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export function subscribeToStockAlarms(
+  onData: (alarms: StockAlarm[]) => void
+): Unsubscribe {
+  const path = 'stockAlarms';
+  return onSnapshot(
+    collection(db, path),
+    (snapshot) => {
+      const list: StockAlarm[] = snapshot.docs
+        .map((d) => {
+          const data = d.data();
+          const createdAtMillis =
+            typeof data.createdAt?.toMillis === 'function' ? Number(data.createdAt.toMillis()) : 0;
+          const triggerScope: 'total' | 'size' = data.triggerScope === 'size' ? 'size' : 'total';
+          return {
+            id: d.id,
+            productId: String(data.productId || ''),
+            productTitle: String(data.productTitle || ''),
+            alarmType: (data.alarmType as StockAlarmType) || 'BELOW_FLOOR',
+            triggerScope,
+            size: data.size as GarmentSize | undefined,
+            currentQuantity: Number(data.currentQuantity ?? 0),
+            threshold: Number(data.threshold ?? 0),
+            acknowledged: Boolean(data.acknowledged),
+            recipientEmail: String(data.recipientEmail || ADMIN_BOOTSTRAP_EMAIL),
+            message: String(data.message || ''),
+            createdAtMillis,
+          };
+        })
+        .sort((a, b) => b.createdAtMillis - a.createdAtMillis);
+      onData(list);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+  );
+}
+
+export async function acknowledgeStockAlarmInFirestore(alarmId: string): Promise<void> {
+  const path = `stockAlarms/${alarmId}`;
+  try {
+    await updateDoc(doc(db, 'stockAlarms', alarmId), {
+      acknowledged: true,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function deleteStockAlarmInFirestore(alarmId: string): Promise<void> {
+  const path = `stockAlarms/${alarmId}`;
+  try {
+    await deleteDoc(doc(db, 'stockAlarms', alarmId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+// ================= INTEGRATIONS & SYNC LOGS =================
 
 export function subscribeToShopifyIntegration(
   onData: (config: ShopifyConfig) => void
@@ -586,6 +938,8 @@ export async function appendSyncLogInFirestore(
   }
 }
 
+// ================= ORDERS & ADMIN DISPATCH SYSTEM =================
+
 export async function createOrderInFirestore(
   items: CartItem[],
   customer: CheckoutCustomerInfo,
@@ -620,6 +974,7 @@ export async function createOrderInFirestore(
     day: 'numeric',
   });
 
+  const isAdminUser = await checkIsUserAdmin(user);
   const batch = writeBatch(db);
 
   // 1. Public-safe Order Summary (No PII)
@@ -645,6 +1000,7 @@ export async function createOrderInFirestore(
     total,
     estimatedDelivery,
     status: 'Confirmed',
+    stockDeducted: isAdminUser,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
@@ -732,18 +1088,52 @@ export async function createOrderInFirestore(
   };
   batch.set(doc(db, 'tracking', orderNum), trackingPayload);
 
-  // 4. Decrement inventory in Firestore if signed-in user is Admin
-  const isAdminUser = await checkIsUserAdmin(user);
+  // 4. Decrement per-size and total inventory in Firestore if signed-in user is Admin
+  const breachedProducts: { productId: string; productTitle: string; totalQty: number; floor: number; ceiling: number }[] = [];
   if (isAdminUser) {
+    const prodMap = new Map<string, Product>();
+    for (const p of currentProducts) prodMap.set(p.id, p);
+
     for (const item of items) {
-      const prod = currentProducts.find((p) => p.id === item.productId);
+      const prod = prodMap.get(item.productId);
       if (prod) {
-        const nextQty = Math.max(0, prod.inventoryQuantity - item.quantity);
+        const nextStockBySize = { ...getEffectiveStockMap(prod) };
+        const sz = item.size as GarmentSize;
+        if (ALL_GARMENT_SIZES.includes(sz)) {
+          nextStockBySize[sz] = Math.max(0, (nextStockBySize[sz] ?? 0) - item.quantity);
+        }
+        const nextTotal = getTotalFromStockMap(prod.sizes, nextStockBySize);
+
         batch.update(doc(db, 'products', prod.id), {
-          inventoryQuantity: nextQty,
-          inStock: nextQty > 0,
+          stockBySize: nextStockBySize,
+          inventoryQuantity: nextTotal,
+          inStock: nextTotal > 0,
           updatedAt: serverTimestamp(),
         });
+
+        const updatedProd: Product = {
+          ...prod,
+          stockBySize: nextStockBySize,
+          inventoryQuantity: nextTotal,
+          inStock: nextTotal > 0,
+        };
+        prodMap.set(prod.id, updatedProd);
+      }
+    }
+
+    for (const item of items) {
+      const updated = prodMap.get(item.productId);
+      if (updated) {
+        const floor = getProductFloor(updated);
+        if (updated.inventoryQuantity <= floor) {
+          breachedProducts.push({
+            productId: updated.id,
+            productTitle: updated.title,
+            totalQty: updated.inventoryQuantity,
+            floor,
+            ceiling: getProductCeiling(updated),
+          });
+        }
       }
     }
   }
@@ -753,9 +1143,12 @@ export async function createOrderInFirestore(
     if (isAdminUser) {
       await appendSyncLogInFirestore({
         event: 'FIRESTORE_ORDER_CREATED',
-        details: `Order ${orderNum} committed atomically with PII isolation & stock update.`,
+        details: `Order ${orderNum} committed atomically with PII isolation & per-size stock deduction.`,
         status: 'success',
       });
+      for (const bp of breachedProducts) {
+        await checkAndEmitStockAlarmIfBreached(bp);
+      }
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `orders/${orderNum}`);
@@ -774,6 +1167,7 @@ export async function createOrderInFirestore(
     total,
     estimatedDelivery,
     status: 'Confirmed',
+    stockDeducted: isAdminUser,
   };
 }
 
@@ -827,7 +1221,7 @@ export async function updateOrderTrackingStatusInFirestore(
       updatedAt: serverTimestamp(),
     });
 
-    const mappedOrderStatus =
+    const mappedOrderStatus: OrderStatus =
       newStatus === 'Ordered'
         ? 'Confirmed'
         : newStatus === 'Processing'
@@ -873,5 +1267,309 @@ export async function getUserOrdersFromFirestore(uid: string): Promise<
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
+// Shared order interfaces re-exported from ../types/store
+
+function mapOrderDoc(
+  docId: string,
+  data: Record<string, unknown>
+): CustomerOrderRecord {
+  const rawCreatedAt = data.createdAt as { toMillis?: () => number } | undefined;
+  const createdAtMillis =
+    typeof rawCreatedAt?.toMillis === 'function' ? Number(rawCreatedAt.toMillis()) : 0;
+  const shippingMethod: 'express' | 'standard' =
+    data.shippingMethod === 'standard' ? 'standard' : 'express';
+  const paymentMethod: 'card' | 'shopify_pay' | 'apple_pay' =
+    data.paymentMethod === 'shopify_pay'
+      ? 'shopify_pay'
+      : data.paymentMethod === 'apple_pay'
+      ? 'apple_pay'
+      : 'card';
+  const rawStatus = String(data.status || 'Confirmed');
+  const status: OrderStatus =
+    rawStatus === 'Preparing Shipment' ||
+    rawStatus === 'Dispatched' ||
+    rawStatus === 'Delivered'
+      ? rawStatus
+      : 'Confirmed';
+
+  return {
+    orderNumber: String(data.orderNumber || docId),
+    userId: String(data.userId || ''),
+    shopifyOrderRef: String(data.shopifyOrderRef || ''),
+    date: String(data.date || ''),
+    items: Array.isArray(data.items)
+      ? data.items.map((it: Record<string, unknown>) => ({
+          productId: String(it.productId || ''),
+          title: String(it.title || 'Garment'),
+          price: Number(it.price ?? 0),
+          size: String(it.size || 'M'),
+          color: String(it.color || ''),
+          quantity: Number(it.quantity ?? 1),
+        }))
+      : [],
+    shippingMethod,
+    paymentMethod,
+    discountCode: data.discountCode ? String(data.discountCode) : undefined,
+    discountPercentage:
+      typeof data.discountPercentage === 'number' ? data.discountPercentage : undefined,
+    subtotal: Number(data.subtotal ?? 0),
+    discountAmount: Number(data.discountAmount ?? 0),
+    shippingAmount: Number(data.shippingAmount ?? 0),
+    taxAmount: Number(data.taxAmount ?? 0),
+    total: Number(data.total ?? 0),
+    estimatedDelivery: String(data.estimatedDelivery || ''),
+    status,
+    dispatchCourier: data.dispatchCourier ? String(data.dispatchCourier) : undefined,
+    trackingNumber: data.trackingNumber ? String(data.trackingNumber) : undefined,
+    dispatchNotes: data.dispatchNotes ? String(data.dispatchNotes) : undefined,
+    dispatchedAt: data.dispatchedAt ? String(data.dispatchedAt) : undefined,
+    stockDeducted: typeof data.stockDeducted === 'boolean' ? data.stockDeducted : undefined,
+    createdAtMillis,
+  };
+}
+
+export function subscribeToCustomerOrders(
+  uid: string,
+  onData: (orders: CustomerOrderRecord[]) => void
+): Unsubscribe {
+  const path = 'orders';
+  const q = query(collection(db, path), where('userId', '==', uid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const orders = snap.docs
+        .map((d) => mapOrderDoc(d.id, d.data() as Record<string, unknown>))
+        .sort((a, b) => b.createdAtMillis - a.createdAtMillis);
+      onData(orders);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+  );
+}
+
+export function subscribeToAllOrdersForAdmin(
+  onData: (orders: CustomerOrderRecord[]) => void
+): Unsubscribe {
+  const path = 'orders';
+  return onSnapshot(
+    collection(db, path),
+    (snap) => {
+      const orders = snap.docs
+        .map((d) => mapOrderDoc(d.id, d.data() as Record<string, unknown>))
+        .sort((a, b) => b.createdAtMillis - a.createdAtMillis);
+      onData(orders);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+  );
+}
+
+export async function dispatchOrderFromAdminInFirestore(params: {
+  order: CustomerOrderRecord;
+  nextStatus: OrderStatus;
+  courier: string;
+  trackingNumber: string;
+  dispatchNotes?: string;
+  deductStock: boolean;
+  products: Product[];
+}): Promise<void> {
+  const { order, nextStatus, courier, trackingNumber, dispatchNotes, deductStock, products } =
+    params;
+  const cleanOrderNum = order.orderNumber.trim().toUpperCase();
+  const path = `orders/${cleanOrderNum}`;
+
+  const mappedShipmentStatus: ShipmentStatus =
+    nextStatus === 'Confirmed'
+      ? 'Ordered'
+      : nextStatus === 'Preparing Shipment'
+      ? 'Processing'
+      : nextStatus === 'Dispatched'
+      ? 'Shipped'
+      : 'Delivered';
+
+  const statusOrder: ShipmentStatus[] = ['Ordered', 'Processing', 'Shipped', 'Delivered'];
+  const newIndex = statusOrder.indexOf(mappedShipmentStatus);
+
+  const cleanCourier = clampStr(courier, 100, 'DHL Express Athlete Priority');
+  const cleanTracking = clampStr(
+    trackingNumber,
+    64,
+    `DHL-EXP-${Math.floor(100000000 + Math.random() * 900000000)}-INT`
+  );
+  const nowTimestamp = new Date().toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const nowIso = new Date().toISOString();
+
+  try {
+    const batch = writeBatch(db);
+    const shouldDeductNow = Boolean(deductStock && !order.stockDeducted);
+
+    const orderUpdatePayload: Record<string, unknown> = {
+      status: nextStatus,
+      dispatchCourier: cleanCourier,
+      trackingNumber: cleanTracking,
+      stockDeducted: Boolean(order.stockDeducted || shouldDeductNow),
+      updatedAt: serverTimestamp(),
+    };
+    if (dispatchNotes && dispatchNotes.trim()) {
+      orderUpdatePayload.dispatchNotes = clampStr(dispatchNotes, 300);
+    }
+    if (nextStatus === 'Dispatched' || nextStatus === 'Delivered') {
+      orderUpdatePayload.dispatchedAt = order.dispatchedAt || nowIso.slice(0, 64);
+    }
+    batch.update(doc(db, 'orders', cleanOrderNum), orderUpdatePayload);
+
+    const trackSnap = await getDoc(doc(db, 'tracking', cleanOrderNum));
+    if (trackSnap.exists()) {
+      const trackData = trackSnap.data();
+      const existingCheckpoints = Array.isArray(trackData.checkpoints)
+        ? (trackData.checkpoints as TrackingCheckpoint[])
+        : [];
+
+      const updatedCheckpoints: TrackingCheckpoint[] = existingCheckpoints.map((cp) => {
+        const cpIdx = statusOrder.indexOf(cp.step);
+        const isCompleted = cpIdx <= newIndex;
+        const isActive = cpIdx === newIndex;
+        let nextDescription = cp.description;
+        if (cp.step === 'Shipped' && isCompleted && dispatchNotes?.trim()) {
+          nextDescription = clampStr(
+            `Dispatched via ${cleanCourier} (${cleanTracking}) — ${dispatchNotes.trim()}`,
+            240
+          );
+        } else if (cp.step === 'Shipped' && isCompleted) {
+          nextDescription = `Dispatched from Offside Hub via ${cleanCourier} (${cleanTracking})`;
+        }
+
+        return {
+          ...cp,
+          completed: isCompleted,
+          active: isActive,
+          description: nextDescription,
+          timestamp:
+            isCompleted &&
+            (cp.timestamp.includes('Estimated') ||
+              cp.timestamp.includes('Scheduled') ||
+              cp.timestamp.includes('Pending'))
+              ? nowTimestamp
+              : cp.timestamp,
+        };
+      });
+
+      if (updatedCheckpoints.length === 4) {
+        batch.update(doc(db, 'tracking', cleanOrderNum), {
+          currentStatus: mappedShipmentStatus,
+          courier: cleanCourier,
+          trackingNumber: cleanTracking,
+          checkpoints: updatedCheckpoints,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+
+    const breachedProducts: {
+      productId: string;
+      productTitle: string;
+      totalQty: number;
+      floor: number;
+      ceiling: number;
+    }[] = [];
+
+    if (shouldDeductNow) {
+      const prodMap = new Map<string, Product>();
+      for (const p of products) prodMap.set(p.id, p);
+
+      for (const item of order.items) {
+        const prod = prodMap.get(item.productId);
+        if (!prod) continue;
+        const nextStockBySize = { ...getEffectiveStockMap(prod) };
+        const sz = item.size as GarmentSize;
+        if (ALL_GARMENT_SIZES.includes(sz)) {
+          nextStockBySize[sz] = Math.max(0, (nextStockBySize[sz] ?? 0) - item.quantity);
+        }
+        const nextTotal = getTotalFromStockMap(prod.sizes, nextStockBySize);
+
+        batch.update(doc(db, 'products', prod.id), {
+          stockBySize: nextStockBySize,
+          inventoryQuantity: nextTotal,
+          inStock: nextTotal > 0,
+          updatedAt: serverTimestamp(),
+        });
+
+        prodMap.set(prod.id, {
+          ...prod,
+          stockBySize: nextStockBySize,
+          inventoryQuantity: nextTotal,
+          inStock: nextTotal > 0,
+        });
+      }
+
+      for (const item of order.items) {
+        const updated = prodMap.get(item.productId);
+        if (updated) {
+          const floor = getProductFloor(updated);
+          if (updated.inventoryQuantity <= floor) {
+            breachedProducts.push({
+              productId: updated.id,
+              productTitle: updated.title,
+              totalQty: updated.inventoryQuantity,
+              floor,
+              ceiling: getProductCeiling(updated),
+            });
+          }
+        }
+      }
+    }
+
+    await batch.commit();
+
+    await appendSyncLogInFirestore({
+      event: `DISPATCH_${nextStatus.toUpperCase().replace(/\s+/g, '_')}`,
+      details: `Order ${cleanOrderNum} updated to "${nextStatus}" via ${cleanCourier} (${cleanTracking})${
+        shouldDeductNow ? ' with per-size stock deduction' : ''
+      }.`,
+      status: 'success',
+    });
+
+    for (const bp of breachedProducts) {
+      await checkAndEmitStockAlarmIfBreached(bp);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function getOrderShippingDetailsFromFirestore(
+  orderNumber: string
+): Promise<OrderPrivateShippingInfo | null> {
+  const cleanOrderNum = orderNumber.trim().toUpperCase();
+  if (!/^[a-zA-Z0-9_-]{3,32}$/.test(cleanOrderNum)) return null;
+
+  const path = `orders/${cleanOrderNum}/private/shipping`;
+  try {
+    const snap = await getDoc(doc(db, 'orders', cleanOrderNum, 'private', 'shipping'));
+    if (!snap.exists()) return null;
+    const d = snap.data();
+    return {
+      email: String(d.email || ''),
+      firstName: String(d.firstName || ''),
+      lastName: String(d.lastName || ''),
+      athleteId: d.athleteId ? String(d.athleteId) : undefined,
+      clubOrTeam: d.clubOrTeam ? String(d.clubOrTeam) : undefined,
+      address: String(d.address || ''),
+      apartment: d.apartment ? String(d.apartment) : undefined,
+      city: String(d.city || ''),
+      postalCode: String(d.postalCode || ''),
+      country: String(d.country || ''),
+      phone: String(d.phone || ''),
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, path);
   }
 }

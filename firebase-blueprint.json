@@ -84,7 +84,19 @@
         },
         "inventoryQuantity": {
           "type": "number",
-          "description": "Available physical warehouse units."
+          "description": "Available physical warehouse units across all sizes."
+        },
+        "stockBySize": {
+          "type": "object",
+          "description": "Map of available stock quantity per garment size (XS, S, M, L, XL, XXL)."
+        },
+        "stockFloor": {
+          "type": "number",
+          "description": "Minimum stock floor threshold before low-stock alarm triggers."
+        },
+        "stockCeiling": {
+          "type": "number",
+          "description": "Maximum warehouse stock ceiling threshold before overstock alarm triggers."
         },
         "weightGsm": {
           "type": "number",
@@ -288,6 +300,25 @@
         "status": {
           "type": "string",
           "enum": ["Confirmed", "Preparing Shipment", "Dispatched", "Delivered"]
+        },
+        "dispatchCourier": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "trackingNumber": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "dispatchNotes": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "dispatchedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "stockDeducted": {
+          "type": "boolean"
         },
         "createdAt": {
           "type": "string",
@@ -583,6 +614,77 @@
         }
       },
       "required": ["timestamp", "event", "details", "status", "createdAt"]
+    },
+    "StockAlarm": {
+      "title": "StockAlarm",
+      "description": "Automated or manually triggered inventory floor/ceiling alarm notification record.",
+      "type": "object",
+      "properties": {
+        "productId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "productTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "alarmType": {
+          "type": "string",
+          "enum": ["BELOW_FLOOR", "ABOVE_CEILING", "OUT_OF_STOCK"]
+        },
+        "triggerScope": {
+          "type": "string",
+          "enum": ["total", "size"]
+        },
+        "size": {
+          "type": "string",
+          "maxLength": 8
+        },
+        "currentQuantity": {
+          "type": "number"
+        },
+        "threshold": {
+          "type": "number"
+        },
+        "acknowledged": {
+          "type": "boolean"
+        },
+        "recipientEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "message": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "productId",
+        "productTitle",
+        "alarmType",
+        "triggerScope",
+        "currentQuantity",
+        "threshold",
+        "acknowledged",
+        "recipientEmail",
+        "message",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -617,6 +719,10 @@
     "/syncLogs/{logId}": {
       "schema": { "$ref": "#/entities/SyncLog" },
       "description": "Integration and inventory audit log stream (admin-only)."
+    },
+    "/stockAlarms/{alarmId}": {
+      "schema": { "$ref": "#/entities/StockAlarm" },
+      "description": "Stock floor and ceiling breach alarm records (admin-only)."
     }
   }
 }

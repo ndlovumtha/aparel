@@ -121,4 +121,22 @@ export const DIRTY_DOZEN_TESTS: RulesTestCase[] = [
     payload: { orderNumber: 'OF-999114', userId: 'cust-123', createdAt: '2020-01-01T00:00:00Z' },
     expected: 'PERMISSION_DENIED',
   },
+  {
+    id: 'DD-13',
+    name: 'Non-Admin Stock Alarm Read/Create',
+    collectionPath: '/stockAlarms/alarm-fake-1',
+    operation: 'create',
+    auth: { uid: 'cust-123', email: 'athlete@example.com', email_verified: true },
+    payload: { productId: 'offside-top-01', alarmType: 'BELOW_FLOOR' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 'DD-14',
+    name: 'Non-Admin Order Dispatch Update',
+    collectionPath: '/orders/OF-123456',
+    operation: 'update',
+    auth: { uid: 'cust-123', email: 'athlete@example.com', email_verified: true },
+    payload: { status: 'Dispatched', trackingNumber: 'SPOOF-123' },
+    expected: 'PERMISSION_DENIED',
+  },
 ];

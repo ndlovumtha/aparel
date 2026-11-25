@@ -3,12 +3,18 @@ import { Database, ShieldCheck, ExternalLink } from 'lucide-react';
 import { ShopifyConfig } from '../types/store';
 
 interface FooterProps {
-  onOpenAdmin: () => void;
+  onOpenLogin: () => void;
   onOpenOrderTracker?: () => void;
+  onOpenOrderHistory?: () => void;
   onOpenSpecials?: () => void;
 }
 
-export const Footer: React.FC<FooterProps> = ({ onOpenAdmin, onOpenOrderTracker, onOpenSpecials }) => {
+export const Footer: React.FC<FooterProps> = ({
+  onOpenLogin,
+  onOpenOrderTracker,
+  onOpenOrderHistory,
+  onOpenSpecials,
+}) => {
   return (
     <footer className="bg-[#08090b] border-t border-[#181c24] text-slate-400 text-xs py-14 px-6">
       <div className="max-w-7xl mx-auto">
@@ -24,11 +30,21 @@ export const Footer: React.FC<FooterProps> = ({ onOpenAdmin, onOpenOrderTracker,
             </p>
             <div className="pt-2 flex flex-col gap-1.5">
               <button
-                onClick={onOpenAdmin}
-                className="inline-flex items-center gap-1.5 text-[11px] font-mono text-[#ccff00] hover:underline cursor-pointer"
+                onClick={onOpenLogin}
+                className="inline-flex items-center gap-1.5 text-[11px] font-mono text-[#ccff00] hover:underline cursor-pointer text-left"
               >
-                <span>🔒 Admin Operations Portal</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-[#ccff00]" />
+                <span>Athlete Login / Sign Up</span>
               </button>
+              {onOpenOrderHistory && (
+                <button
+                  onClick={onOpenOrderHistory}
+                  className="inline-flex items-center gap-1.5 text-[11px] font-mono text-slate-300 hover:text-white cursor-pointer text-left"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-white" />
+                  <span>Customer Order History</span>
+                </button>
+              )}
               {onOpenOrderTracker && (
                 <button
                   onClick={onOpenOrderTracker}

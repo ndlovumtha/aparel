@@ -1,12 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { User } from 'firebase/auth';
-import { ShipmentStatus, ShipmentTrackingRecord, TrackingCheckpoint } from '../types/store';
+import { OrderStatus, SessionAccount, ShipmentStatus, ShipmentTrackingRecord, TrackingCheckpoint } from '../types/store';
 import { getOrderTracking, updateOrderTrackingStatus, getStoredOrders } from '../services/shopify';
 import {
   getOrderTrackingFromFirestore,
   updateOrderTrackingStatusInFirestore,
   getUserOrdersFromFirestore,
 } from '../services/firestore';
+import {
+  dispatchOrderOnServerApi,
+  fetchMyServerOrdersApi,
+  fetchOrderTrackingOnServerApi,
+} from '../services/authApi';
 import {
   X,
   Search,
@@ -25,6 +30,8 @@ interface OrderTrackerModalProps {
   onClose: () => void;
   initialOrderNumber?: string;
   currentUser: User | null;
+  sessionAccount: SessionAccount | null;
+  authToken: string | null;
   isAdmin?: boolean;
 }
 
@@ -40,11 +47,13 @@ export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({
   onClose,
   initialOrderNumber = 'OF-849102',
   currentUser,
+  sessionAccount,
+  authToken,
   isAdmin = false,
 }) => {
   const [inputOrderNumber, setInputOrderNumber] = useState(initialOrderNumber || 'OF-849102');
   const [trackingRecord, setTrackingRecord] = useState<ShipmentTrackingRecord | null>(null);
-  const [isFirestoreBacked, setIsFirestoreBacked] = useState(false);
+  const [recordOrigin, setRecordOrigin] = useState<'firestore' | 'server' | 'demo'>('demo');
   const [isSearching, setIsSearching] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [userOrders, setUserOrders] = useState<
@@ -60,10 +69,22 @@ export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({
     setStatusMessage(null);
 
     try {
+      const serverRecord = await fetchOrderTrackingOnServerApi(clean);
+      if (serverRecord) {
+        setTrackingRecord(serverRecord);
+        setRecordOrigin('server');
+        setIsSearching(false);
+        return;
+      }
+    } catch (err) {
+      console.warn('Server tracking lookup fallback:', err);
+    }
+
+    try {
       const firestoreRecord = await getOrderTrackingFromFirestore(clean);
       if (firestoreRecord) {
         setTrackingRecord(firestoreRecord);
-        setIsFirestoreBacked(true);
+        setRecordOrigin('firestore');
         setIsSearching(false);
         return;
       }
@@ -73,7 +94,7 @@ export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({
 
     const fallbackRecord = getOrderTracking(clean);
     setTrackingRecord(fallbackRecord);
-    setIsFirestoreBacked(false);
+    setRecordOrigin('demo');
     setIsSearching(false);
   };
 
@@ -85,29 +106,65 @@ export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({
   }, [isOpen, initialOrderNumber]);
 
   useEffect(() => {
-    if (!isOpen || !currentUser || !currentUser.emailVerified) {
+    if (!isOpen) {
       setUserOrders([]);
       return;
     }
+
     let cancelled = false;
-    getUserOrdersFromFirestore(currentUser.uid)
-      .then((orders) => {
-        if (!cancelled) setUserOrders(orders);
-      })
-      .catch((err) => {
-        console.warn('Could not load user orders:', err);
-      });
+    const loadCombinedUserOrders = async () => {
+      const combined = new Map<string, { orderNumber: string; date: string; total: number; status: string }>();
+
+      if (currentUser && currentUser.emailVerified) {
+        try {
+          const fsOrders = await getUserOrdersFromFirestore(currentUser.uid);
+          for (const o of fsOrders) combined.set(o.orderNumber, o);
+        } catch (err) {
+          console.warn('Could not load Firestore user orders:', err);
+        }
+      }
+
+      if (sessionAccount && authToken) {
+        try {
+          const srvRes = await fetchMyServerOrdersApi(authToken);
+          for (const o of srvRes.orders || []) {
+            combined.set(o.orderNumber, {
+              orderNumber: o.orderNumber,
+              date: o.date,
+              total: o.total,
+              status: o.status,
+            });
+          }
+        } catch (err) {
+          console.warn('Could not load server user orders:', err);
+        }
+      }
+
+      if (!cancelled) {
+        setUserOrders(Array.from(combined.values()));
+      }
+    };
+
+    loadCombinedUserOrders();
     return () => {
       cancelled = true;
     };
-  }, [isOpen, currentUser]);
+  }, [isOpen, currentUser, sessionAccount, authToken]);
 
   if (!isOpen) return null;
+
+  const canPersistOperations = Boolean(
+    isAdmin ||
+      sessionAccount?.role === 'superuser' ||
+      (sessionAccount?.role === 'staff' &&
+        Array.isArray(sessionAccount.permissions) &&
+        sessionAccount.permissions.includes('execute_order_dispatch'))
+  );
 
   const handleStatusChange = async (newStatus: ShipmentStatus) => {
     if (!trackingRecord) return;
 
-    if (isFirestoreBacked) {
+    if (recordOrigin === 'server' || recordOrigin === 'firestore') {
       const statusOrder: ShipmentStatus[] = ['Ordered', 'Processing', 'Shipped', 'Delivered'];
       const newIndex = statusOrder.indexOf(newStatus);
       const updatedCheckpoints: TrackingCheckpoint[] = trackingRecord.checkpoints.map((cp) => {
@@ -119,7 +176,10 @@ export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({
           completed: isCompleted,
           active: isActive,
           timestamp:
-            isCompleted && (cp.timestamp.includes('Estimated') || cp.timestamp.includes('Scheduled') || cp.timestamp.includes('Pending'))
+            isCompleted &&
+            (cp.timestamp.includes('Estimated') ||
+              cp.timestamp.includes('Scheduled') ||
+              cp.timestamp.includes('Pending'))
               ? new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
               : cp.timestamp,
         };
@@ -132,21 +192,38 @@ export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({
       };
       setTrackingRecord(updatedLocal);
 
-      if (isAdmin) {
+      if (canPersistOperations) {
         try {
-          await updateOrderTrackingStatusInFirestore(
-            trackingRecord.orderNumber,
-            newStatus,
-            updatedCheckpoints
-          );
+          if (recordOrigin === 'server' && authToken) {
+            const mappedOrderStatus: OrderStatus =
+              newStatus === 'Ordered'
+                ? 'Confirmed'
+                : newStatus === 'Processing'
+                ? 'Preparing Shipment'
+                : newStatus === 'Shipped'
+                ? 'Dispatched'
+                : 'Delivered';
+            await dispatchOrderOnServerApi(authToken, {
+              orderNumber: trackingRecord.orderNumber,
+              nextStatus: mappedOrderStatus,
+              courier: trackingRecord.courier,
+              trackingNumber: trackingRecord.trackingNumber,
+            });
+          } else {
+            await updateOrderTrackingStatusInFirestore(
+              trackingRecord.orderNumber,
+              newStatus,
+              updatedCheckpoints
+            );
+          }
           setStatusMessage(`Shipment status saved to database: "${newStatus}".`);
         } catch (err) {
           console.error(err);
-          setStatusMessage(`Preview updated to "${newStatus}" (admin sync retry required).`);
+          setStatusMessage(`Preview updated to "${newStatus}" (sync retry required).`);
         }
       } else {
         setStatusMessage(
-          `Previewing "${newStatus}" step. Sign in as Admin to persist shipment updates in database.`
+          `Previewing "${newStatus}" step. Sign in as Staff or Superuser to persist shipment updates.`
         );
       }
     } else {
@@ -178,7 +255,7 @@ export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({
               <h3 className="text-base font-bold text-white uppercase tracking-tight flex items-center gap-2">
                 <span>Athlete Order & Shipment Tracker</span>
                 <span className="text-[10px] font-mono bg-[#162111] text-[#ccff00] border border-[#ccff00]/30 px-1.5 py-0.5">
-                  {isFirestoreBacked ? 'Live Database' : 'Live Dispatch'}
+                  {recordOrigin !== 'demo' ? 'Live Database' : 'Live Dispatch'}
                 </span>
               </h3>
               <p className="text-xs text-slate-400">
