@@ -1,0 +1,6 @@
+{
+  "name": "Offside Apparel – Minimalist Performance Sportswear",
+  "description": "Minimalist high-performance sportswear engineered for professional athletes with Shopify synchronization and custom checkout.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
