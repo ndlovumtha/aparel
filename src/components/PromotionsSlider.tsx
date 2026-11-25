@@ -1,14 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import { FirestorePromotion, INITIAL_PROMOTIONS } from '../services/firestore';
 import {
   ChevronLeft,
   ChevronRight,
-  Tag,
   Copy,
   Check,
   ArrowRight,
   Flame,
-  ShieldAlert,
-  Zap,
   Sparkles,
 } from 'lucide-react';
 
@@ -26,93 +24,39 @@ export interface PromotionSlide {
   categoryLink: string;
 }
 
-const PROMOTIONS_DATA: PromotionSlide[] = [
-  {
-    id: 'promo-1',
-    badge: 'Competition Season Special',
-    tagline: 'Aerodynamic Performance Peak',
-    title: '20% Off AeroCarbon™ Matchday & Race Tops',
-    description:
-      'Engineered for sub-10s sprinters and marathon record attempts. Ultralight sub-90g matrix with ultrasonic zero-chafe welded seams.',
-    promoCode: 'OLYMPIC20',
-    discountValue: '20% OFF',
-    validUntil: 'Active for Olympic & Trials Athletes',
-    image: '/src/assets/images/product_stealth_jersey_1793037645515.jpg',
-    highlightPill: 'Sub-90g Garment Matrix',
-    categoryLink: 'Track & Field',
-  },
-  {
-    id: 'promo-2',
-    badge: 'Team & Federation Restock',
-    tagline: 'Muscular Stabilization Program',
-    title: 'Squad Bundle: Buy 2 Get 1 Free on Apex Compression',
-    description:
-      'Equip your training squad with 22-26 mmHg graduated compression shorts designed to minimize eccentric hamstring micro-tears during decelerations.',
-    promoCode: 'SQUADPRO',
-    discountValue: 'BUY 2 GET 1',
-    validUntil: 'Available for Clubs & National Squads',
-    image: '/src/assets/images/product_compression_tights_1793037646698.jpg',
-    highlightPill: '22-26 mmHg Compression',
-    categoryLink: 'Pitch & Field',
-  },
-  {
-    id: 'promo-3',
-    badge: 'Extreme Weather Launch',
-    tagline: '20,000mm HydroZero™ Technology',
-    title: 'Complimentary Pro Athlete Bag with Storm Shell Orders',
-    description:
-      'Order any VaporWeave or HydroZero™ technical waterproof outerwear and automatically receive a complimentary ballistic waterproof athlete gear pack.',
-    promoCode: 'STORMREADY',
-    discountValue: 'FREE $75 GIFT',
-    validUntil: 'Limited First 150 Weather Orders',
-    image: '/src/assets/images/product_technical_jacket_1793037646546.jpg',
-    highlightPill: '20,000mm Hydrostatic Barrier',
-    categoryLink: 'Outerwear',
-  },
-  {
-    id: 'promo-4',
-    badge: 'Global Dispatch Privilege',
-    tagline: 'Zero Wait Priority Transit',
-    title: 'Free Worldwide DHL Express Priority on Orders Over $120',
-    description:
-      'Direct temperature-controlled airfreight to any national training facility, altitude camp, or private residence with live GPS tracking.',
-    promoCode: 'FASTTRACK',
-    discountValue: 'FREE EXPRESS',
-    validUntil: 'Automated Global Handoff',
-    image: '/src/assets/images/hero_athlete_campaign_1793037644855.jpg',
-    highlightPill: '2-Day Guaranteed Airfreight',
-    categoryLink: 'All',
-  },
-];
-
 interface PromotionsSliderProps {
+  promotions?: FirestorePromotion[];
   onApplyPromoCode: (code: string) => void;
   onExploreCategory: (category: string) => void;
 }
 
 export const PromotionsSlider: React.FC<PromotionsSliderProps> = ({
+  promotions,
   onApplyPromoCode,
   onExploreCategory,
 }) => {
+  const slides = promotions && promotions.length > 0 ? promotions : INITIAL_PROMOTIONS;
   const [currentIndex, setCurrentIndex] = useState(0);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
   const [isPaused, setIsPaused] = useState(false);
 
-  // Auto-slide every 5 seconds when not hovered
+  const safeIndex = currentIndex % slides.length;
+
+  // Auto-slide every 5.5 seconds when not hovered
   useEffect(() => {
-    if (isPaused) return;
+    if (isPaused || slides.length <= 1) return;
     const interval = setInterval(() => {
-      setCurrentIndex((prev) => (prev + 1) % PROMOTIONS_DATA.length);
+      setCurrentIndex((prev) => (prev + 1) % slides.length);
     }, 5500);
     return () => clearInterval(interval);
-  }, [isPaused]);
+  }, [isPaused, slides.length]);
 
   const handlePrev = () => {
-    setCurrentIndex((prev) => (prev === 0 ? PROMOTIONS_DATA.length - 1 : prev - 1));
+    setCurrentIndex((prev) => (prev === 0 ? slides.length - 1 : prev - 1));
   };
 
   const handleNext = () => {
-    setCurrentIndex((prev) => (prev + 1) % PROMOTIONS_DATA.length);
+    setCurrentIndex((prev) => (prev + 1) % slides.length);
   };
 
   const handleCopyAndApply = (code: string) => {
@@ -122,7 +66,7 @@ export const PromotionsSlider: React.FC<PromotionsSliderProps> = ({
     setTimeout(() => setCopiedCode(null), 2500);
   };
 
-  const activePromo = PROMOTIONS_DATA[currentIndex];
+  const activePromo = slides[safeIndex];
 
   return (
     <section
@@ -151,7 +95,7 @@ export const PromotionsSlider: React.FC<PromotionsSliderProps> = ({
           {/* Navigation Controls & Slide Index */}
           <div className="flex items-center gap-3">
             <span className="text-xs font-mono text-slate-400 tabular-nums">
-              0{currentIndex + 1} / 0{PROMOTIONS_DATA.length}
+              0{safeIndex + 1} / 0{slides.length}
             </span>
             <div className="flex items-center gap-1.5">
               <button
@@ -273,9 +217,9 @@ export const PromotionsSlider: React.FC<PromotionsSliderProps> = ({
           </div>
 
           {/* Progress Indicators */}
-          <div className="grid grid-cols-4 bg-[#141822] border-t border-[#1e2430]">
-            {PROMOTIONS_DATA.map((promo, idx) => {
-              const isActive = idx === currentIndex;
+          <div className="grid grid-cols-2 sm:grid-cols-4 bg-[#141822] border-t border-[#1e2430]">
+            {slides.map((promo, idx) => {
+              const isActive = idx === safeIndex;
               return (
                 <button
                   key={promo.id}

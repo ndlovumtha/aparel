@@ -1,6 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { ShipmentStatus, ShipmentTrackingRecord } from '../types/store';
+import { User } from 'firebase/auth';
+import { ShipmentStatus, ShipmentTrackingRecord, TrackingCheckpoint } from '../types/store';
 import { getOrderTracking, updateOrderTrackingStatus, getStoredOrders } from '../services/shopify';
+import {
+  getOrderTrackingFromFirestore,
+  updateOrderTrackingStatusInFirestore,
+  getUserOrdersFromFirestore,
+} from '../services/firestore';
 import {
   X,
   Search,
@@ -11,8 +17,6 @@ import {
   MapPin,
   ShieldCheck,
   RotateCw,
-  ExternalLink,
-  ChevronRight,
   Sparkles,
 } from 'lucide-react';
 
@@ -20,10 +24,12 @@ interface OrderTrackerModalProps {
   isOpen: boolean;
   onClose: () => void;
   initialOrderNumber?: string;
+  currentUser: User | null;
+  isAdmin?: boolean;
 }
 
 const STATUS_STEPS: { key: ShipmentStatus; label: string; desc: string }[] = [
-  { key: 'Ordered', label: 'Ordered', desc: 'Shopify order confirmed & synced' },
+  { key: 'Ordered', label: 'Ordered', desc: 'Order confirmed & logged in database' },
   { key: 'Processing', label: 'Processing', desc: 'Garment QA pass & ultrasonic inspection' },
   { key: 'Shipped', label: 'Shipped', desc: 'In flight / temperature-controlled transit' },
   { key: 'Delivered', label: 'Delivered', desc: 'Signed for at athlete facility' },
@@ -33,44 +39,122 @@ export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({
   isOpen,
   onClose,
   initialOrderNumber = 'OF-849102',
+  currentUser,
+  isAdmin = false,
 }) => {
-  if (!isOpen) return null;
-
   const [inputOrderNumber, setInputOrderNumber] = useState(initialOrderNumber || 'OF-849102');
   const [trackingRecord, setTrackingRecord] = useState<ShipmentTrackingRecord | null>(null);
+  const [isFirestoreBacked, setIsFirestoreBacked] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [userOrders, setUserOrders] = useState<
+    { orderNumber: string; date: string; total: number; status: string }[]
+  >([]);
 
-  // Load stored orders from localStorage to show in recent orders pills
   const storedOrders = getStoredOrders();
 
-  // Load tracking on mount or order change
-  useEffect(() => {
-    if (initialOrderNumber) {
-      setInputOrderNumber(initialOrderNumber);
-      handleTrack(initialOrderNumber);
-    } else {
-      handleTrack('OF-849102');
-    }
-  }, [initialOrderNumber]);
-
-  const handleTrack = (orderNumToSearch: string) => {
-    if (!orderNumToSearch.trim()) return;
+  const handleTrack = async (orderNumToSearch: string) => {
+    const clean = orderNumToSearch.trim();
+    if (!clean) return;
     setIsSearching(true);
     setStatusMessage(null);
 
-    setTimeout(() => {
-      const record = getOrderTracking(orderNumToSearch);
-      setTrackingRecord(record);
-      setIsSearching(false);
-    }, 300);
+    try {
+      const firestoreRecord = await getOrderTrackingFromFirestore(clean);
+      if (firestoreRecord) {
+        setTrackingRecord(firestoreRecord);
+        setIsFirestoreBacked(true);
+        setIsSearching(false);
+        return;
+      }
+    } catch (err) {
+      console.warn('Firestore tracking lookup fallback:', err);
+    }
+
+    const fallbackRecord = getOrderTracking(clean);
+    setTrackingRecord(fallbackRecord);
+    setIsFirestoreBacked(false);
+    setIsSearching(false);
   };
 
-  const handleStatusChange = (newStatus: ShipmentStatus) => {
+  useEffect(() => {
+    if (!isOpen) return;
+    const target = initialOrderNumber || 'OF-849102';
+    setInputOrderNumber(target);
+    handleTrack(target);
+  }, [isOpen, initialOrderNumber]);
+
+  useEffect(() => {
+    if (!isOpen || !currentUser || !currentUser.emailVerified) {
+      setUserOrders([]);
+      return;
+    }
+    let cancelled = false;
+    getUserOrdersFromFirestore(currentUser.uid)
+      .then((orders) => {
+        if (!cancelled) setUserOrders(orders);
+      })
+      .catch((err) => {
+        console.warn('Could not load user orders:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, currentUser]);
+
+  if (!isOpen) return null;
+
+  const handleStatusChange = async (newStatus: ShipmentStatus) => {
     if (!trackingRecord) return;
-    const updated = updateOrderTrackingStatus(trackingRecord.orderNumber, newStatus);
-    setTrackingRecord(updated);
-    setStatusMessage(`Shipment status updated to "${newStatus}" — Shopify webhook notification emitted.`);
+
+    if (isFirestoreBacked) {
+      const statusOrder: ShipmentStatus[] = ['Ordered', 'Processing', 'Shipped', 'Delivered'];
+      const newIndex = statusOrder.indexOf(newStatus);
+      const updatedCheckpoints: TrackingCheckpoint[] = trackingRecord.checkpoints.map((cp) => {
+        const cpIndex = statusOrder.indexOf(cp.step);
+        const isCompleted = cpIndex <= newIndex;
+        const isActive = cpIndex === newIndex;
+        return {
+          ...cp,
+          completed: isCompleted,
+          active: isActive,
+          timestamp:
+            isCompleted && (cp.timestamp.includes('Estimated') || cp.timestamp.includes('Scheduled') || cp.timestamp.includes('Pending'))
+              ? new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : cp.timestamp,
+        };
+      });
+
+      const updatedLocal: ShipmentTrackingRecord = {
+        ...trackingRecord,
+        currentStatus: newStatus,
+        checkpoints: updatedCheckpoints,
+      };
+      setTrackingRecord(updatedLocal);
+
+      if (isAdmin) {
+        try {
+          await updateOrderTrackingStatusInFirestore(
+            trackingRecord.orderNumber,
+            newStatus,
+            updatedCheckpoints
+          );
+          setStatusMessage(`Shipment status saved to database: "${newStatus}".`);
+        } catch (err) {
+          console.error(err);
+          setStatusMessage(`Preview updated to "${newStatus}" (admin sync retry required).`);
+        }
+      } else {
+        setStatusMessage(
+          `Previewing "${newStatus}" step. Sign in as Admin to persist shipment updates in database.`
+        );
+      }
+    } else {
+      const updated = updateOrderTrackingStatus(trackingRecord.orderNumber, newStatus);
+      setTrackingRecord(updated);
+      setStatusMessage(`Sample shipment preview updated to "${newStatus}".`);
+    }
+
     setTimeout(() => setStatusMessage(null), 3500);
   };
 
@@ -94,11 +178,11 @@ export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({
               <h3 className="text-base font-bold text-white uppercase tracking-tight flex items-center gap-2">
                 <span>Athlete Order & Shipment Tracker</span>
                 <span className="text-[10px] font-mono bg-[#162111] text-[#ccff00] border border-[#ccff00]/30 px-1.5 py-0.5">
-                  Live Dispatch
+                  {isFirestoreBacked ? 'Live Database' : 'Live Dispatch'}
                 </span>
               </h3>
               <p className="text-xs text-slate-400">
-                Real-Time DHL Courier & Shopify Order Lifecycle Synchronization
+                Real-Time Courier & Order Lifecycle Synchronization
               </p>
             </div>
           </div>
@@ -151,10 +235,10 @@ export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({
               </button>
             </div>
 
-            {/* Quick-Select Demo Orders */}
+            {/* Quick-Select Demo & Saved Database Orders */}
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <span className="text-slate-500 font-mono text-[11px] uppercase">
-                Sample Shipments:
+                Shipments:
               </span>
               <button
                 type="button"
@@ -177,7 +261,21 @@ export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({
                 OF-391820 (Delivered)
               </button>
 
-              {storedOrders.length > 0 && storedOrders[0].orderNumber !== 'OF-849102' && (
+              {userOrders.slice(0, 3).map((ord) => (
+                <button
+                  key={ord.orderNumber}
+                  type="button"
+                  onClick={() => {
+                    setInputOrderNumber(ord.orderNumber);
+                    handleTrack(ord.orderNumber);
+                  }}
+                  className="text-[11px] font-mono text-[#ccff00] hover:text-white bg-[#1a2312] border border-[#ccff00]/40 px-2 py-0.5"
+                >
+                  {ord.orderNumber} (${ord.total})
+                </button>
+              ))}
+
+              {userOrders.length === 0 && storedOrders.length > 0 && storedOrders[0].orderNumber !== 'OF-849102' && (
                 <button
                   type="button"
                   onClick={() => {

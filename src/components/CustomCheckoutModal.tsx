@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { User, signInWithPopup } from 'firebase/auth';
+import { auth, googleProvider } from '../lib/firebase';
 import { CartItem, CheckoutCustomerInfo, ConfirmedOrder } from '../types/store';
 import {
   X,
@@ -12,6 +14,7 @@ import {
   Package,
   Printer,
   Sparkles,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface CustomCheckoutModalProps {
@@ -20,6 +23,7 @@ interface CustomCheckoutModalProps {
   items: CartItem[];
   discountPercentage: number;
   discountCode: string;
+  currentUser: User | null;
   onProcessOrder: (customer: CheckoutCustomerInfo) => Promise<ConfirmedOrder>;
   onOrderSuccess: () => void;
   onTrackOrder?: (orderNumber: string) => void;
@@ -31,14 +35,15 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
   items,
   discountPercentage,
   discountCode,
+  currentUser,
   onProcessOrder,
   onOrderSuccess,
   onTrackOrder,
 }) => {
-  if (!isOpen) return null;
-
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [confirmedOrder, setConfirmedOrder] = useState<ConfirmedOrder | null>(null);
 
   // Form State
@@ -64,6 +69,25 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
   const [cardExpiry, setCardExpiry] = useState('11/28');
   const [cardCvc, setCardCvc] = useState('892');
 
+  useEffect(() => {
+    if (isOpen) {
+      setCheckoutError(null);
+      if (currentUser?.email) {
+        const nameParts = (currentUser.displayName || '').trim().split(/\s+/);
+        setFormData((prev) => ({
+          ...prev,
+          email: prev.email || currentUser.email || '',
+          firstName: prev.firstName || nameParts[0] || '',
+          lastName: prev.lastName || (nameParts.length > 1 ? nameParts.slice(1).join(' ') : ''),
+          discountCode: discountCode || prev.discountCode,
+          discountPercentage,
+        }));
+      }
+    }
+  }, [isOpen, currentUser, discountCode, discountPercentage]);
+
+  if (!isOpen) return null;
+
   const subtotal = items.reduce((acc, item) => acc + item.price * item.quantity, 0);
   const discountAmount = Math.round(subtotal * (discountPercentage / 100));
   const shippingAmount = formData.shippingMethod === 'express' ? 24 : subtotal >= 150 ? 0 : 12;
@@ -72,9 +96,10 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
 
   // Autofill button for instant testing
   const handleAutofillDemo = () => {
+    setCheckoutError(null);
     setFormData({
       ...formData,
-      email: 'marcus.vance@eliteathletics.org',
+      email: currentUser?.email || 'marcus.vance@eliteathletics.org',
       firstName: 'Marcus',
       lastName: 'Vance',
       athleteId: 'OLY-TRACK-2026',
@@ -88,11 +113,29 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
     });
   };
 
+  const handleGoogleSignInForCheckout = async (): Promise<User | null> => {
+    setCheckoutError(null);
+    setIsSigningIn(true);
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      return result.user;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Google Sign-In was cancelled.';
+      if (!msg.includes('popup-closed-by-user')) {
+        setCheckoutError(msg);
+      }
+      return null;
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
   const handleNextStep = (e: React.FormEvent) => {
     e.preventDefault();
+    setCheckoutError(null);
     if (step === 1) {
       if (!formData.email || !formData.firstName || !formData.lastName || !formData.address || !formData.city || !formData.postalCode) {
-        alert('Please complete all mandatory delivery fields.');
+        setCheckoutError('Please complete all mandatory delivery fields.');
         return;
       }
       setStep(2);
@@ -104,15 +147,30 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
   };
 
   const handleSubmitPayment = async () => {
+    setCheckoutError(null);
+    let activeUser = currentUser || auth.currentUser;
+    if (!activeUser || !activeUser.emailVerified) {
+      activeUser = await handleGoogleSignInForCheckout();
+      if (!activeUser) {
+        setCheckoutError('Please sign in with Google to save your order to the database.');
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     try {
-      const order = await onProcessOrder(formData);
+      const order = await onProcessOrder({
+        ...formData,
+        discountCode: discountCode || formData.discountCode,
+        discountPercentage,
+      });
       setConfirmedOrder(order);
       setStep(4);
       onOrderSuccess();
-    } catch (err) {
+    } catch (err: unknown) {
       console.error(err);
-      alert('Checkout error occurred. Please try again.');
+      const msg = err instanceof Error ? err.message : 'Checkout error occurred. Please try again.';
+      setCheckoutError(msg.startsWith('{') ? 'Failed to persist order in database. Please verify your details and try again.' : msg);
     } finally {
       setIsSubmitting(false);
     }
@@ -183,6 +241,13 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
 
         {/* Step Content */}
         <div className="p-6 md:p-8">
+          {checkoutError && (
+            <div className="mb-5 p-3 bg-[#241313] border border-rose-500/40 text-rose-300 text-xs font-mono flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+              <span>{checkoutError}</span>
+            </div>
+          )}
+
           {step === 1 && (
             <form onSubmit={handleNextStep} className="space-y-6">
               <div className="flex items-center justify-between">
@@ -600,6 +665,35 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
                 </div>
               </div>
 
+              {/* Athlete Account Verification for Order Persistence */}
+              <div className="p-4 bg-[#11151d] border border-[#222938] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <div className="flex items-start gap-2.5">
+                  <ShieldCheck className="w-4 h-4 text-[#ccff00] shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold text-white uppercase tracking-tight">
+                      {currentUser && currentUser.emailVerified
+                        ? 'Verified Athlete Account Linked'
+                        : 'Google Verification Required to Save Order'}
+                    </p>
+                    <p className="text-slate-400 font-mono text-[11px] mt-0.5">
+                      {currentUser && currentUser.emailVerified
+                        ? `Signed in as ${currentUser.email} — receipt & shipment tracking synced to database.`
+                        : 'Sign in with Google to bind your order receipt & live shipment tracker securely.'}
+                    </p>
+                  </div>
+                </div>
+                {(!currentUser || !currentUser.emailVerified) && (
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignInForCheckout}
+                    disabled={isSigningIn}
+                    className="px-4 py-2 bg-[#1c2330] hover:bg-[#263042] border border-[#ccff00]/50 text-[#ccff00] font-mono font-bold uppercase text-[11px] tracking-wider transition-colors shrink-0 cursor-pointer disabled:opacity-50"
+                  >
+                    {isSigningIn ? 'Connecting...' : 'Sign in with Google'}
+                  </button>
+                )}
+              </div>
+
               {/* Actions */}
               <div className="pt-4 border-t border-[#1e232e] flex items-center justify-between">
                 <button
@@ -613,13 +707,13 @@ export const CustomCheckoutModal: React.FC<CustomCheckoutModalProps> = ({
                 <button
                   type="button"
                   onClick={handleSubmitPayment}
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || isSigningIn}
                   className="px-8 py-3.5 bg-[#ccff00] hover:bg-[#b8e600] text-black font-bold uppercase tracking-wider text-xs transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50 shadow-xl"
                 >
                   {isSubmitting ? (
                     <>
                       <span className="animate-spin">◌</span>
-                      <span>Authorizing with Shopify...</span>
+                      <span>Authorizing &amp; Saving Order...</span>
                     </>
                   ) : (
                     <>

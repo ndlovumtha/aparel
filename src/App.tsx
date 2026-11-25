@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { onAuthStateChanged, signOut, User } from 'firebase/auth';
+import { auth } from './lib/firebase';
 import {
   Product,
   CartItem,
@@ -8,19 +10,30 @@ import {
   ConfirmedOrder,
 } from './types/store';
 import {
-  getShopifyConfig,
-  saveShopifyConfig,
-  getStoredProducts,
-  getSyncLogs,
+  DEFAULT_SHOPIFY_CONFIG,
+  INITIAL_SYNC_LOGS,
   syncCatalogFromShopify,
-  simulateShopifyWebhook,
-  processCustomCheckout,
-  updateProductStock,
-  addProductStock,
-  batchRestockLowItems,
-  addNewProduct,
-  deleteProduct,
+  getShopifyConfig,
 } from './services/shopify';
+import {
+  FirestorePromotion,
+  INITIAL_PROMOTIONS,
+  checkIsUserAdmin,
+  subscribeToProducts,
+  subscribeToPromotions,
+  seedDatabaseIfEmptyAsAdmin,
+  createProductInFirestore,
+  updateProductStockInFirestore,
+  batchRestockLowItemsInFirestore,
+  applyFlashPriceSyncInFirestore,
+  deleteProductInFirestore,
+  subscribeToShopifyIntegration,
+  saveShopifyConfigInFirestore,
+  subscribeToSyncLogs,
+  appendSyncLogInFirestore,
+  createOrderInFirestore,
+} from './services/firestore';
+import { INITIAL_PRODUCTS } from './data/products';
 import { Navbar } from './components/Navbar';
 import { Hero } from './components/Hero';
 import { PromotionsSlider } from './components/PromotionsSlider';
@@ -34,16 +47,20 @@ import { FabricTechnologySection } from './components/FabricTechnologySection';
 import { AthleteFitGuideModal } from './components/AthleteFitGuideModal';
 import { OrderTrackerModal } from './components/OrderTrackerModal';
 import { Footer } from './components/Footer';
-import { Flame, ArrowRight, Zap, Truck, Lock } from 'lucide-react';
+import { Flame, Truck, Lock, Zap } from 'lucide-react';
 
 const CART_STORAGE_KEY = 'offside_apparel_cart';
 const DISCOUNT_CODE_KEY = 'offside_discount_code';
-const ADMIN_AUTH_KEY = 'offside_admin_authenticated';
 
 export default function App() {
-  const [products, setProducts] = useState<Product[]>(getStoredProducts());
-  const [shopifyConfig, setShopifyConfig] = useState<ShopifyConfig>(getShopifyConfig());
-  const [syncLogs, setSyncLogs] = useState<SyncLogEntry[]>(getSyncLogs());
+  const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
+  const [promotions, setPromotions] = useState<FirestorePromotion[]>(INITIAL_PROMOTIONS);
+  const [shopifyConfig, setShopifyConfig] = useState<ShopifyConfig>(DEFAULT_SHOPIFY_CONFIG);
+  const [syncLogs, setSyncLogs] = useState<SyncLogEntry[]>(INITIAL_SYNC_LOGS);
+
+  // Firebase Auth & Admin Authorization State
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(false);
 
   // Cart State
   const [cart, setCart] = useState<CartItem[]>(() => {
@@ -65,15 +82,6 @@ export default function App() {
     if (code === 'SQUADPRO') return 25;
     if (['PRO15', 'OLYMPIC', 'ATHLETE2026', 'PROATHLETE15'].includes(code)) return 15;
     return 0;
-  });
-
-  // Admin Authentication State
-  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(() => {
-    try {
-      return sessionStorage.getItem(ADMIN_AUTH_KEY) === 'true';
-    } catch {
-      return false;
-    }
   });
 
   // Modals & Drawers
@@ -99,13 +107,61 @@ export default function App() {
     }
   }, [cart]);
 
-  // Persist admin session state
+  // Listen to Firebase Auth state and seed Firestore if Admin signs in
   useEffect(() => {
-    try {
-      sessionStorage.setItem(ADMIN_AUTH_KEY, isAdminLoggedIn ? 'true' : 'false');
-    } catch (e) {
-      console.warn(e);
+    const unsubAuth = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      if (user) {
+        try {
+          const isAdmin = await checkIsUserAdmin(user);
+          setIsAdminLoggedIn(isAdmin);
+          if (isAdmin) {
+            await seedDatabaseIfEmptyAsAdmin();
+          }
+        } catch (err) {
+          console.error('Admin verification check error:', err);
+          setIsAdminLoggedIn(false);
+        }
+      } else {
+        setIsAdminLoggedIn(false);
+      }
+    });
+    return () => unsubAuth();
+  }, []);
+
+  // Subscribe to public Storefront Products and Promotions collections in Firestore
+  useEffect(() => {
+    const unsubProducts = subscribeToProducts((dbProducts) => {
+      setProducts(dbProducts);
+    });
+    const unsubPromos = subscribeToPromotions((dbPromos) => {
+      setPromotions(dbPromos);
+    });
+    return () => {
+      unsubProducts();
+      unsubPromos();
+    };
+  }, []);
+
+  // Subscribe to Admin-only Shopify Integration config & Audit Logs when authenticated as Admin
+  useEffect(() => {
+    if (!isAdminLoggedIn) {
+      setShopifyConfig(DEFAULT_SHOPIFY_CONFIG);
+      setSyncLogs(INITIAL_SYNC_LOGS);
+      return;
     }
+
+    const unsubIntegration = subscribeToShopifyIntegration((cfg) => {
+      setShopifyConfig(cfg);
+    });
+    const unsubLogs = subscribeToSyncLogs((logs) => {
+      if (logs.length > 0) setSyncLogs(logs);
+    });
+
+    return () => {
+      unsubIntegration();
+      unsubLogs();
+    };
   }, [isAdminLoggedIn]);
 
   // Toast notification helper
@@ -213,80 +269,101 @@ export default function App() {
     showToast('Admin Session Authorized');
   };
 
-  const handleAdminLogout = () => {
+  const handleAdminLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error('Sign out error:', err);
+    }
     setIsAdminLoggedIn(false);
     setIsAdminPanelOpen(false);
     showToast('Admin Logged Out');
   };
 
-  // Admin Stock Actions
-  const handleUpdateStock = (productId: string, newQuantity: number) => {
-    const updated = updateProductStock(productId, newQuantity);
-    setProducts(updated);
-    setSyncLogs(getSyncLogs());
-    showToast('Stock quantity updated');
+  // Admin Stock Actions (Firestore)
+  const handleUpdateStock = async (productId: string, newQuantity: number) => {
+    await updateProductStockInFirestore(productId, newQuantity);
+    showToast('Stock quantity saved to Firestore');
   };
 
-  const handleAddStock = (productId: string, addUnits: number) => {
-    const updated = addProductStock(productId, addUnits);
-    setProducts(updated);
-    setSyncLogs(getSyncLogs());
-    showToast(`Added ${addUnits > 0 ? `+${addUnits}` : addUnits} units to stock`);
+  const handleAddStock = async (productId: string, addUnits: number) => {
+    const prod = products.find((p) => p.id === productId);
+    const currentQty = prod ? prod.inventoryQuantity : 0;
+    const nextQty = Math.max(0, currentQty + addUnits);
+    await updateProductStockInFirestore(productId, nextQty);
+    showToast(`Added ${addUnits > 0 ? `+${addUnits}` : addUnits} units to Firestore stock`);
   };
 
-  const handleBatchRestock = (incrementAmount: number = 20) => {
-    const updated = batchRestockLowItems(incrementAmount);
-    setProducts(updated);
-    setSyncLogs(getSyncLogs());
-    showToast(`Batch restocked all low inventory items (+${incrementAmount} units)`);
+  const handleBatchRestock = async (incrementAmount: number = 20) => {
+    const count = await batchRestockLowItemsInFirestore(products, incrementAmount);
+    showToast(
+      count > 0
+        ? `Batch restocked ${count} low inventory SKUs (+${incrementAmount} units)`
+        : 'All SKUs already have healthy inventory'
+    );
   };
 
-  // Admin Product Actions
-  const handleCreateProduct = (newProductData: Omit<Product, 'id' | 'shopifyId' | 'handle'>) => {
-    const updated = addNewProduct(newProductData);
-    setProducts(updated);
-    setSyncLogs(getSyncLogs());
-    showToast(`Created & published "${newProductData.title}"`);
+  // Admin Product Actions (Firestore)
+  const handleCreateProduct = async (newProductData: Omit<Product, 'id' | 'shopifyId' | 'handle'>) => {
+    await createProductInFirestore(newProductData);
+    showToast(`Created & published "${newProductData.title}" to Firestore`);
   };
 
-  const handleDeleteProduct = (productId: string) => {
-    const updated = deleteProduct(productId);
-    setProducts(updated);
-    setSyncLogs(getSyncLogs());
-    showToast('Product removed from catalog');
+  const handleDeleteProduct = async (productId: string) => {
+    const prod = products.find((p) => p.id === productId);
+    await deleteProductInFirestore(productId, prod?.title);
+    showToast('Product removed from Firestore catalog');
   };
 
-  // Trigger Shopify catalog sync from Admin
+  // Trigger Shopify catalog sync from Admin and persist snapshot to Firestore
   const handleTriggerSync = async () => {
     try {
       const res = await syncCatalogFromShopify(shopifyConfig);
-      setProducts(res.products);
-      setSyncLogs(res.logs);
-      setShopifyConfig(getShopifyConfig());
+      const updatedCfg: ShopifyConfig = {
+        ...getShopifyConfig(),
+        syncStatus: 'synced',
+        lastSyncedAt: new Date().toISOString(),
+        itemsCount: products.length,
+      };
+      await saveShopifyConfigInFirestore(updatedCfg);
+      await appendSyncLogInFirestore({
+        event: 'SHOPIFY_FIRESTORE_SYNC',
+        details: `Synchronized Shopify endpoint (${shopifyConfig.storeDomain}) with ${products.length} Firestore SKUs.`,
+        status: 'success',
+      });
+      setShopifyConfig(updatedCfg);
       showToast(`Storefront catalog synchronized (${res.products.length} SKUs)`);
     } catch (e) {
       console.error(e);
-      showToast('Synchronization completed with local cache fallback');
+      showToast('Synchronization completed with Firestore catalog');
     }
   };
 
-  // Trigger simulated webhook from Admin
-  const handleTriggerWebhook = (
+  // Trigger simulated webhook from Admin persisted in Firestore
+  const handleTriggerWebhook = async (
     type: 'inventory_reduced' | 'price_sync' | 'new_product',
     productId?: string
   ) => {
-    const updated = simulateShopifyWebhook(type, productId);
-    setProducts(updated);
-    setSyncLogs(getSyncLogs());
+    const target = products.find((p) => p.id === productId) || products[0];
+    if (!target) return;
+
+    if (type === 'inventory_reduced') {
+      const nextQty = Math.max(0, target.inventoryQuantity - 1);
+      await updateProductStockInFirestore(target.id, nextQty);
+      await appendSyncLogInFirestore({
+        event: 'WEBHOOK: inventory_levels/connect',
+        details: `Shopify webhook decremented ${target.title} to ${nextQty} units.`,
+        status: 'info',
+      });
+    } else if (type === 'price_sync') {
+      await applyFlashPriceSyncInFirestore(target.id, target.price);
+    }
     showToast(`Webhook event executed: ${type}`);
   };
 
-  // Process custom checkout
+  // Process custom checkout atomically in Firestore
   const handleProcessOrder = async (customer: CheckoutCustomerInfo): Promise<ConfirmedOrder> => {
-    const order = await processCustomCheckout(cart, customer, discountPercentage);
-    setProducts(getStoredProducts());
-    setSyncLogs(getSyncLogs());
-    return order;
+    return await createOrderInFirestore(cart, customer, discountPercentage, products);
   };
 
   const totalCartItems = cart.reduce((acc, i) => acc + i.quantity, 0);
@@ -378,6 +455,7 @@ export default function App() {
 
         {/* Specials & Promotions Slider Component */}
         <PromotionsSlider
+          promotions={promotions}
           onApplyPromoCode={handleApplyDiscount}
           onExploreCategory={() => scrollToCollection()}
         />
@@ -481,6 +559,7 @@ export default function App() {
         items={cart}
         discountCode={discountCode}
         discountPercentage={discountPercentage}
+        currentUser={currentUser}
         onProcessOrder={handleProcessOrder}
         onOrderSuccess={() => {
           setCart([]);
@@ -502,6 +581,8 @@ export default function App() {
         isOpen={isOrderTrackerOpen}
         onClose={() => setIsOrderTrackerOpen(false)}
         initialOrderNumber={trackingOrderNumber}
+        currentUser={currentUser}
+        isAdmin={isAdminLoggedIn}
       />
 
       {/* 6. Admin Login Modal */}
@@ -509,6 +590,7 @@ export default function App() {
         isOpen={isAdminLoginOpen}
         onClose={() => setIsAdminLoginOpen(false)}
         onLoginSuccess={handleAdminLoginSuccess}
+        currentUser={currentUser}
       />
 
       {/* 7. Dedicated Admin Panel: Stock Management, Product Creator & Integrations */}
@@ -525,10 +607,10 @@ export default function App() {
         onCreateProduct={handleCreateProduct}
         onDeleteProduct={handleDeleteProduct}
         onTriggerSync={handleTriggerSync}
-        onSaveShopifyConfig={(cfg) => {
+        onSaveShopifyConfig={async (cfg) => {
           setShopifyConfig(cfg);
-          saveShopifyConfig(cfg);
-          showToast('Shopify integration configuration updated');
+          await saveShopifyConfigInFirestore(cfg);
+          showToast('Shopify integration configuration saved to Firestore');
         }}
         onTriggerWebhook={handleTriggerWebhook}
       />

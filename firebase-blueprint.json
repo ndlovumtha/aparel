@@ -1,0 +1,622 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Minimalist high-performance athletic apparel SKU in the Offside catalog.",
+      "type": "object",
+      "properties": {
+        "shopifyId": {
+          "type": "string",
+          "description": "Synchronized Shopify GraphQL product identifier.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "description": "Garment display title.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "handle": {
+          "type": "string",
+          "description": "URL-safe slug handle.",
+          "minLength": 2,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "tagline": {
+          "type": "string",
+          "description": "Short technical tagline.",
+          "minLength": 2,
+          "maxLength": 160
+        },
+        "description": {
+          "type": "string",
+          "description": "Full technical garment description.",
+          "minLength": 5,
+          "maxLength": 2000
+        },
+        "price": {
+          "type": "number",
+          "description": "Unit retail price in USD."
+        },
+        "compareAtPrice": {
+          "type": "number",
+          "description": "Optional compare-at price in USD."
+        },
+        "currency": {
+          "type": "string",
+          "description": "Three-letter ISO currency code.",
+          "enum": ["USD", "EUR", "GBP"]
+        },
+        "category": {
+          "type": "string",
+          "description": "Garment category.",
+          "enum": ["Tops", "Bottoms", "Outerwear", "Accessories"]
+        },
+        "discipline": {
+          "type": "string",
+          "description": "Target athletic discipline.",
+          "enum": ["Track & Field", "Pitch & Field", "Endurance", "Recovery", "All"]
+        },
+        "image": {
+          "type": "string",
+          "description": "Primary product image path or URL.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "detailImage": {
+          "type": "string",
+          "description": "Macro fabric specimen image path or URL.",
+          "maxLength": 500
+        },
+        "sizes": {
+          "type": "array",
+          "description": "Available garment sizes (bounded up to 6 items)."
+        },
+        "colors": {
+          "type": "array",
+          "description": "Available colorways (bounded up to 6 items)."
+        },
+        "inStock": {
+          "type": "boolean",
+          "description": "Whether at least one unit is available."
+        },
+        "inventoryQuantity": {
+          "type": "number",
+          "description": "Available physical warehouse units."
+        },
+        "weightGsm": {
+          "type": "number",
+          "description": "Fabric density in grams per square meter."
+        },
+        "fabricSpecs": {
+          "type": "object",
+          "description": "Structured fabric weave, treatment, seam, and breathability specifications."
+        },
+        "athleteFitNotes": {
+          "type": "string",
+          "description": "Ergonomic sizing and compression fit guidance.",
+          "maxLength": 600
+        },
+        "featured": {
+          "type": "boolean",
+          "description": "Whether garment is highlighted as Field Certified."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when product was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when product was last updated."
+        }
+      },
+      "required": [
+        "shopifyId",
+        "title",
+        "handle",
+        "tagline",
+        "description",
+        "price",
+        "currency",
+        "category",
+        "discipline",
+        "image",
+        "sizes",
+        "colors",
+        "inStock",
+        "inventoryQuantity",
+        "weightGsm",
+        "fabricSpecs",
+        "athleteFitNotes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Promotion": {
+      "title": "Promotion",
+      "description": "Promotional offer displayed in the storefront specials slider.",
+      "type": "object",
+      "properties": {
+        "badge": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "tagline": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "title": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 140
+        },
+        "description": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 600
+        },
+        "promoCode": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32,
+          "pattern": "^[A-Z0-9_-]+$"
+        },
+        "discountValue": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40
+        },
+        "discountPercent": {
+          "type": "number"
+        },
+        "validUntil": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "image": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "highlightPill": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "categoryLink": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "sortOrder": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "badge",
+        "tagline",
+        "title",
+        "description",
+        "promoCode",
+        "discountValue",
+        "discountPercent",
+        "validUntil",
+        "image",
+        "highlightPill",
+        "categoryLink",
+        "active",
+        "sortOrder",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Confirmed customer order summary (non-PII fields; PII isolated in private subcollection).",
+      "type": "object",
+      "properties": {
+        "orderNumber": {
+          "type": "string",
+          "pattern": "^OF-[0-9A-Z]+$",
+          "maxLength": 32
+        },
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "shopifyOrderRef": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list of purchased garment line items (max 25)."
+        },
+        "shippingMethod": {
+          "type": "string",
+          "enum": ["express", "standard"]
+        },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["card", "shopify_pay", "apple_pay"]
+        },
+        "discountCode": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "discountPercentage": {
+          "type": "number"
+        },
+        "subtotal": {
+          "type": "number"
+        },
+        "discountAmount": {
+          "type": "number"
+        },
+        "shippingAmount": {
+          "type": "number"
+        },
+        "taxAmount": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        },
+        "estimatedDelivery": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Confirmed", "Preparing Shipment", "Dispatched", "Delivered"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "orderNumber",
+        "userId",
+        "shopifyOrderRef",
+        "date",
+        "items",
+        "shippingMethod",
+        "paymentMethod",
+        "subtotal",
+        "discountAmount",
+        "shippingAmount",
+        "taxAmount",
+        "total",
+        "estimatedDelivery",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OrderPrivateShipping": {
+      "title": "OrderPrivateShipping",
+      "description": "Isolated PII shipping details for an order, strictly restricted to the order owner or an admin.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "firstName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "lastName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "athleteId": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "clubOrTeam": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "address": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 200
+        },
+        "apartment": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "city": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "postalCode": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 24
+        },
+        "country": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "email",
+        "firstName",
+        "lastName",
+        "address",
+        "city",
+        "postalCode",
+        "country",
+        "phone",
+        "createdAt"
+      ]
+    },
+    "ShipmentTracking": {
+      "title": "ShipmentTracking",
+      "description": "Non-PII shipment tracking document keyed by orderNumber for courier progression lookup.",
+      "type": "object",
+      "properties": {
+        "orderNumber": {
+          "type": "string",
+          "pattern": "^OF-[0-9A-Z]+$",
+          "maxLength": 32
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "shopifyOrderRef": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "currentStatus": {
+          "type": "string",
+          "enum": ["Ordered", "Processing", "Shipped", "Delivered"]
+        },
+        "courier": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "trackingNumber": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "orderDate": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "estimatedDelivery": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "athleteName": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "athleteId": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "destination": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list of garment items in shipment (max 25)."
+        },
+        "checkpoints": {
+          "type": "array",
+          "description": "Bounded list of 4 shipment status checkpoints."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "orderNumber",
+        "ownerId",
+        "shopifyOrderRef",
+        "currentStatus",
+        "courier",
+        "trackingNumber",
+        "orderDate",
+        "estimatedDelivery",
+        "athleteName",
+        "destination",
+        "items",
+        "checkpoints",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized Offside HQ administrator record.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email", "role", "createdAt"]
+    },
+    "ShopifyIntegration": {
+      "title": "ShopifyIntegration",
+      "description": "Shopify headless integration configuration restricted to admins.",
+      "type": "object",
+      "properties": {
+        "storeDomain": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 160
+        },
+        "storefrontAccessToken": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "apiVersion": {
+          "type": "string",
+          "enum": ["2024-01", "2024-04"]
+        },
+        "syncStatus": {
+          "type": "string",
+          "enum": ["idle", "syncing", "synced", "error"]
+        },
+        "lastSyncedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["synced-cache", "live-shopify"]
+        },
+        "autoSync": {
+          "type": "boolean"
+        },
+        "itemsCount": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "storeDomain",
+        "apiVersion",
+        "syncStatus",
+        "mode",
+        "autoSync",
+        "itemsCount",
+        "updatedAt"
+      ]
+    },
+    "SyncLog": {
+      "title": "SyncLog",
+      "description": "Audit log entry for stock adjustments, integrations, and webhooks.",
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "event": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "details": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "enum": ["success", "info", "warning"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["timestamp", "event", "details", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Storefront catalog SKUs and stock levels."
+    },
+    "/promotions/{promoId}": {
+      "schema": { "$ref": "#/entities/Promotion" },
+      "description": "Specials and promotional slider campaigns."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Confirmed customer orders (non-PII order summary)."
+    },
+    "/orders/{orderId}/private/shipping": {
+      "schema": { "$ref": "#/entities/OrderPrivateShipping" },
+      "description": "Isolated customer PII shipping details for an order."
+    },
+    "/tracking/{orderNumber}": {
+      "schema": { "$ref": "#/entities/ShipmentTracking" },
+      "description": "Order shipment tracking records keyed by order number."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Authorized admin role registry."
+    },
+    "/integrations/{integrationId}": {
+      "schema": { "$ref": "#/entities/ShopifyIntegration" },
+      "description": "External Shopify integration configuration (admin-only)."
+    },
+    "/syncLogs/{logId}": {
+      "schema": { "$ref": "#/entities/SyncLog" },
+      "description": "Integration and inventory audit log stream (admin-only)."
+    }
+  }
+}
