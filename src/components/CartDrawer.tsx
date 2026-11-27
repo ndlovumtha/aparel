@@ -25,10 +25,10 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   discountPercentage,
   onApplyDiscount,
 }) => {
-  if (!isOpen) return null;
-
   const [inputCode, setInputCode] = useState(discountCode || '');
   const [codeMessage, setCodeMessage] = useState<{ text: string; isError: boolean } | null>(null);
+
+  if (!isOpen) return null;
 
   const subtotal = items.reduce((acc, item) => acc + item.price * item.quantity, 0);
   const discountAmount = Math.round(subtotal * (discountPercentage / 100));

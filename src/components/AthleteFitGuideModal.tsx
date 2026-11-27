@@ -10,11 +10,11 @@ export const AthleteFitGuideModal: React.FC<AthleteFitGuideModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  if (!isOpen) return null;
-
   const [heightCm, setHeightCm] = useState<number>(182);
   const [weightKg, setWeightKg] = useState<number>(76);
   const [fitPreference, setFitPreference] = useState<'race' | 'training'>('race');
+
+  if (!isOpen) return null;
 
   // Compute recommended size
   const calculateSize = (): { size: string; notes: string; factor: string } => {

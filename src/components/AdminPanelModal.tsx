@@ -426,6 +426,42 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     };
   }, [isOpen, isSuperuser, authToken, activeTab]);
 
+  // Dynamic categories aggregated from predefined suggestions + live products
+  const availableCategories = useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const c of PREDEFINED_PRODUCT_CATEGORIES) {
+      const clean = c.trim();
+      if (clean && !seen.has(clean.toLowerCase())) {
+        seen.add(clean.toLowerCase());
+        list.push(clean);
+      }
+    }
+    const extra: string[] = [];
+    for (const p of products) {
+      const clean = (p.category || '').trim();
+      if (clean && !seen.has(clean.toLowerCase())) {
+        seen.add(clean.toLowerCase());
+        extra.push(clean);
+      }
+    }
+    extra.sort((a, b) => a.localeCompare(b));
+    return [...list, ...extra];
+  }, [products]);
+
+  const inUseCategories = useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const p of products) {
+      const clean = (p.category || '').trim();
+      if (clean && !seen.has(clean.toLowerCase())) {
+        seen.add(clean.toLowerCase());
+        list.push(clean);
+      }
+    }
+    return list;
+  }, [products]);
+
   if (!isOpen) return null;
 
   const permissionLabel = (perm: StaffPermission): string =>
@@ -647,42 +683,6 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
 
     return matchesSearch && matchesCategory && matchesStatus;
   });
-
-  // Dynamic categories aggregated from predefined suggestions + live products
-  const availableCategories = useMemo(() => {
-    const seen = new Set<string>();
-    const list: string[] = [];
-    for (const c of PREDEFINED_PRODUCT_CATEGORIES) {
-      const clean = c.trim();
-      if (clean && !seen.has(clean.toLowerCase())) {
-        seen.add(clean.toLowerCase());
-        list.push(clean);
-      }
-    }
-    const extra: string[] = [];
-    for (const p of products) {
-      const clean = (p.category || '').trim();
-      if (clean && !seen.has(clean.toLowerCase())) {
-        seen.add(clean.toLowerCase());
-        extra.push(clean);
-      }
-    }
-    extra.sort((a, b) => a.localeCompare(b));
-    return [...list, ...extra];
-  }, [products]);
-
-  const inUseCategories = useMemo(() => {
-    const seen = new Set<string>();
-    const list: string[] = [];
-    for (const p of products) {
-      const clean = (p.category || '').trim();
-      if (clean && !seen.has(clean.toLowerCase())) {
-        seen.add(clean.toLowerCase());
-        list.push(clean);
-      }
-    }
-    return list;
-  }, [products]);
 
   // Filtered Products for Inventory List View
   const filteredInventoryList = products.filter((p) => {

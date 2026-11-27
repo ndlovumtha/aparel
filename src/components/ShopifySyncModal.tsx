@@ -34,8 +34,6 @@ export const ShopifySyncModal: React.FC<ShopifySyncModalProps> = ({
   onSaveConfig,
   onTriggerWebhook,
 }) => {
-  if (!isOpen) return null;
-
   const [domain, setDomain] = useState(config.storeDomain);
   const [token, setToken] = useState(config.storefrontAccessToken);
   const [apiVersion, setApiVersion] = useState(config.apiVersion);
@@ -43,6 +41,8 @@ export const ShopifySyncModal: React.FC<ShopifySyncModalProps> = ({
   const [isSyncing, setIsSyncing] = useState(false);
   const [selectedProductForWebhook, setSelectedProductForWebhook] = useState<string>(products[0]?.id || '');
   const [activeTab, setActiveTab] = useState<'overview' | 'logs' | 'config'>('overview');
+
+  if (!isOpen) return null;
 
   const handleSync = async () => {
     setIsSyncing(true);
