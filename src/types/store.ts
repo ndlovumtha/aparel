@@ -1,6 +1,98 @@
-export type GarmentSize = 'XS' | 'S' | 'M' | 'L' | 'XL' | 'XXL';
+export type GarmentSize = string;
 
 export const ALL_GARMENT_SIZES: GarmentSize[] = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
+
+export type ProductCategory = string;
+
+export const PREDEFINED_PRODUCT_CATEGORIES: string[] = [
+  'Tops',
+  'Bottoms',
+  'Outerwear',
+  'Accessories',
+  'Footwear',
+  'Compression',
+  'Headwear',
+  'Bags & Packs',
+];
+
+export type SizingType =
+  | 'apparel_alpha'
+  | 'bottoms_waist'
+  | 'footwear_us'
+  | 'dual_fit'
+  | 'accessories_one_size'
+  | 'youth_alpha'
+  | 'custom';
+
+export interface SizingTypePreset {
+  id: SizingType;
+  label: string;
+  shortLabel: string;
+  description: string;
+  availableSizes: string[];
+  defaultSelectedSizes: string[];
+}
+
+export const SIZING_TYPE_PRESETS: SizingTypePreset[] = [
+  {
+    id: 'apparel_alpha',
+    label: 'Apparel Alpha (XS–XXL)',
+    shortLabel: 'Alpha (XS–XXL)',
+    description: 'Jerseys, tops, jackets & competition outerwear',
+    availableSizes: ['XS', 'S', 'M', 'L', 'XL', 'XXL'],
+    defaultSelectedSizes: ['XS', 'S', 'M', 'L', 'XL'],
+  },
+  {
+    id: 'bottoms_waist',
+    label: 'Waist / Numeric (28–38)',
+    shortLabel: 'Waist (28–38)',
+    description: 'Shorts, running tights & tailored track pants',
+    availableSizes: ['28', '30', '32', '34', '36', '38'],
+    defaultSelectedSizes: ['28', '30', '32', '34', '36'],
+  },
+  {
+    id: 'footwear_us',
+    label: 'Footwear (US 7–13)',
+    shortLabel: 'Footwear (US)',
+    description: 'Track spikes, pitch cleats & training shoes',
+    availableSizes: ['US 7', 'US 8', 'US 9', 'US 10', 'US 11', 'US 12', 'US 13'],
+    defaultSelectedSizes: ['US 8', 'US 9', 'US 10', 'US 11', 'US 12'],
+  },
+  {
+    id: 'dual_fit',
+    label: 'Dual Fit (S/M–L/XL)',
+    shortLabel: 'Dual Fit',
+    description: 'Compression sleeves, socks, gloves & fitted caps',
+    availableSizes: ['XS/S', 'S/M', 'M/L', 'L/XL'],
+    defaultSelectedSizes: ['S/M', 'M/L', 'L/XL'],
+  },
+  {
+    id: 'accessories_one_size',
+    label: 'One Size / Universal Gear',
+    shortLabel: 'One Size',
+    description: 'Bags, hydration flasks, towels & accessories',
+    availableSizes: ['ONE SIZE'],
+    defaultSelectedSizes: ['ONE SIZE'],
+  },
+  {
+    id: 'youth_alpha',
+    label: 'Youth / Junior (YXS–YXL)',
+    shortLabel: 'Youth (YXS–YXL)',
+    description: 'Junior academy & youth training kits',
+    availableSizes: ['YXS', 'YS', 'YM', 'YL', 'YXL'],
+    defaultSelectedSizes: ['YS', 'YM', 'YL', 'YXL'],
+  },
+  {
+    id: 'custom',
+    label: 'Custom Sizes',
+    shortLabel: 'Custom',
+    description: 'Define custom size labels specific to the product',
+    availableSizes: [],
+    defaultSelectedSizes: ['STD'],
+  },
+];
+
+export const ALL_SIZING_TYPES: SizingType[] = SIZING_TYPE_PRESETS.map((p) => p.id);
 
 export interface Product {
   id: string;
@@ -12,7 +104,8 @@ export interface Product {
   price: number;
   compareAtPrice?: number;
   currency: string;
-  category: 'Tops' | 'Bottoms' | 'Outerwear' | 'Accessories';
+  category: ProductCategory;
+  sizingType?: SizingType;
   discipline: 'Track & Field' | 'Pitch & Field' | 'Endurance' | 'Recovery' | 'All';
   image: string;
   detailImage?: string;
@@ -169,7 +262,7 @@ export const ALL_STAFF_PERMISSIONS: StaffPermission[] = [
 export interface StaffPermissionMeta {
   key: StaffPermission;
   label: string;
-  module: 'Stock & Alarms' | 'Catalog & Variants' | 'Order Dispatch' | 'Integrations';
+  module: 'Stock & Alarms' | 'Inventory' | 'Order Dispatch' | 'Integrations';
   description: string;
 }
 
@@ -188,9 +281,9 @@ export const STAFF_PERMISSION_CATALOG: StaffPermissionMeta[] = [
   },
   {
     key: 'manage_catalog_variants',
-    label: 'Manage Catalog, Sizes & Colors',
-    module: 'Catalog & Variants',
-    description: 'Upload new SKUs, edit sizes, manage color swatches, and remove discontinued products.',
+    label: 'Manage Inventory, Sizes & Colors',
+    module: 'Inventory',
+    description: 'Add inventory products with predefined categories, edit sizes, manage color swatches, and remove discontinued SKUs.',
   },
   {
     key: 'view_dispatch_orders',
@@ -237,8 +330,8 @@ export const DEFAULT_RIGHTS_PROFILES: RightsProfileDefinition[] = [
   },
   {
     id: 'profile-catalog-merchandiser',
-    name: 'Catalog & Variants Merchandiser',
-    description: 'Uploads new garments, configures sizes and color variants, and monitors stock status.',
+    name: 'Inventory Merchandiser',
+    description: 'Adds inventory garments with predefined categories, configures sizes/color variants, and monitors stock.',
     permissions: ['view_stock_alarms', 'manage_catalog_variants'],
     builtIn: true,
   },

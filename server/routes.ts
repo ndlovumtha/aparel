@@ -368,6 +368,8 @@ export function registerApiRoutes(app: Express): void {
         const productId = String(req.params.id || '').trim();
         const { baseProduct, updates } = req.body ?? {};
         const patch = (updates || {}) as {
+          category?: Product['category'];
+          sizingType?: Product['sizingType'];
           sizes?: GarmentSize[];
           colors?: { name: string; hex: string }[];
           stockBySize?: Partial<Record<GarmentSize, number>>;
@@ -380,6 +382,8 @@ export function registerApiRoutes(app: Express): void {
         const actor = req.sessionUser!;
         if (actor.role === 'staff') {
           const touchesCatalogVariants =
+            patch.category !== undefined ||
+            patch.sizingType !== undefined ||
             patch.sizes !== undefined ||
             patch.colors !== undefined ||
             patch.price !== undefined ||
@@ -391,7 +395,7 @@ export function registerApiRoutes(app: Express): void {
 
           if (touchesCatalogVariants && !actor.permissions.includes('manage_catalog_variants')) {
             res.status(403).json({
-              error: 'Your rights profile does not allow modifying catalog sizes, colors, or pricing.',
+              error: 'Your rights profile does not allow modifying inventory categories, sizing types, sizes, colors, or pricing.',
             });
             return;
           }

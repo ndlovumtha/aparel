@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  ALL_GARMENT_SIZES,
   ALL_STAFF_PERMISSIONS,
   DEFAULT_RIGHTS_PROFILES,
+  PREDEFINED_PRODUCT_CATEGORIES,
+  SIZING_TYPE_PRESETS,
   GarmentSize,
   OrderStatus,
   Product,
+  ProductCategory,
   RightsProfileDefinition,
   ShopifyConfig,
+  SizingType,
   STAFF_PERMISSION_CATALOG,
   StockAlarm,
   StockAlarmType,
@@ -38,7 +41,10 @@ import {
   getEffectiveStockMap,
   getProductCeiling,
   getProductFloor,
+  getSizingTypePreset,
   getTotalFromStockMap,
+  inferSizingTypeFromProduct,
+  suggestSizingTypeForCategory,
 } from '../utils/inventory';
 import { hasOpsPermission } from '../utils/permissions';
 import {
@@ -89,6 +95,8 @@ interface AdminPanelModalProps {
   onUpdateProductVariantsAndStock: (
     product: Product,
     updates: {
+      category?: ProductCategory;
+      sizingType?: SizingType;
       sizes?: GarmentSize[];
       colors?: { name: string; hex: string }[];
       stockBySize?: Partial<Record<GarmentSize, number>>;
@@ -123,9 +131,9 @@ interface AdminPanelModalProps {
   onTriggerWebhook: (type: 'inventory_reduced' | 'price_sync' | 'new_product', productId?: string) => void;
 }
 
-const PERMISSION_MODULES: ('Stock & Alarms' | 'Catalog & Variants' | 'Order Dispatch' | 'Integrations')[] = [
+const PERMISSION_MODULES: ('Stock & Alarms' | 'Inventory' | 'Order Dispatch' | 'Integrations')[] = [
   'Stock & Alarms',
-  'Catalog & Variants',
+  'Inventory',
   'Order Dispatch',
   'Integrations',
 ];
@@ -238,15 +246,23 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const [sendingAlarmId, setSendingAlarmId] = useState<string | null>(null);
   const [alarmRecipientEmail, setAlarmRecipientEmail] = useState<string>(adminEmail || 'blujay1809@gmail.com');
 
-  // Product Variant Editor state (for editing existing product sizes, colorways, stock, thresholds)
+  // Inventory list search & category filter
+  const [inventorySearch, setInventorySearch] = useState('');
+  const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState<'all' | ProductCategory>('all');
+
+  // Product Variant Editor state (for editing existing product category, sizing type, sizes, colorways, stock, thresholds)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [editCategory, setEditCategory] = useState<ProductCategory>('Tops');
+  const [editSizingType, setEditSizingType] = useState<SizingType>('apparel_alpha');
   const [editSizes, setEditSizes] = useState<GarmentSize[]>([]);
+  const [editCustomSizeInput, setEditCustomSizeInput] = useState('');
   const [editStockBySize, setEditStockBySize] = useState<Partial<Record<GarmentSize, number>>>({});
   const [editColors, setEditColors] = useState<{ name: string; hex: string }[]>([]);
   const [editColorName, setEditColorName] = useState('');
   const [editColorHex, setEditColorHex] = useState('#1B2028');
   const [editFloor, setEditFloor] = useState<number>(DEFAULT_STOCK_FLOOR);
   const [editCeiling, setEditCeiling] = useState<number>(DEFAULT_STOCK_CEILING);
+  const [editFormError, setEditFormError] = useState<string | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   // New Product Creator Modal / Section state
@@ -256,11 +272,15 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const [newDescription, setNewDescription] = useState('');
   const [newPrice, setNewPrice] = useState<number>(140);
   const [newComparePrice, setNewComparePrice] = useState<number | undefined>(160);
-  const [newCategory, setNewCategory] = useState<'Tops' | 'Bottoms' | 'Outerwear' | 'Accessories'>('Tops');
+  const [newCategory, setNewCategory] = useState<ProductCategory>('Tops');
+  const [newSizingType, setNewSizingType] = useState<SizingType>('apparel_alpha');
+  const [sizingManuallyChanged, setSizingManuallyChanged] = useState(false);
+  const [newCustomSizeInput, setNewCustomSizeInput] = useState('');
+  const [newFormError, setNewFormError] = useState<string | null>(null);
   const [newDiscipline, setNewDiscipline] = useState<'Track & Field' | 'Pitch & Field' | 'Endurance' | 'Recovery' | 'All'>('Track & Field');
   const [newGsm, setNewGsm] = useState<number>(95);
   const [newImage, setNewImage] = useState<string>('/src/assets/images/product_stealth_jersey_1793037645515.jpg');
-  const [newSizes, setNewSizes] = useState<GarmentSize[]>(['S', 'M', 'L', 'XL']);
+  const [newSizes, setNewSizes] = useState<GarmentSize[]>(['XS', 'S', 'M', 'L', 'XL']);
   const [newStockBySize, setNewStockBySize] = useState<Partial<Record<GarmentSize, number>>>({
     XS: 4,
     S: 8,
@@ -628,6 +648,57 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     return matchesSearch && matchesCategory && matchesStatus;
   });
 
+  // Dynamic categories aggregated from predefined suggestions + live products
+  const availableCategories = useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const c of PREDEFINED_PRODUCT_CATEGORIES) {
+      const clean = c.trim();
+      if (clean && !seen.has(clean.toLowerCase())) {
+        seen.add(clean.toLowerCase());
+        list.push(clean);
+      }
+    }
+    const extra: string[] = [];
+    for (const p of products) {
+      const clean = (p.category || '').trim();
+      if (clean && !seen.has(clean.toLowerCase())) {
+        seen.add(clean.toLowerCase());
+        extra.push(clean);
+      }
+    }
+    extra.sort((a, b) => a.localeCompare(b));
+    return [...list, ...extra];
+  }, [products]);
+
+  const inUseCategories = useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const p of products) {
+      const clean = (p.category || '').trim();
+      if (clean && !seen.has(clean.toLowerCase())) {
+        seen.add(clean.toLowerCase());
+        list.push(clean);
+      }
+    }
+    return list;
+  }, [products]);
+
+  // Filtered Products for Inventory List View
+  const filteredInventoryList = products.filter((p) => {
+    const q = inventorySearch.trim().toLowerCase();
+    const matchesSearch =
+      !q ||
+      p.title.toLowerCase().includes(q) ||
+      p.category.toLowerCase().includes(q) ||
+      p.discipline.toLowerCase().includes(q) ||
+      p.colors.some((c) => c.name.toLowerCase().includes(q));
+    const matchesCategory =
+      inventoryCategoryFilter === 'all' ||
+      p.category.toLowerCase() === inventoryCategoryFilter.toLowerCase();
+    return matchesSearch && matchesCategory;
+  });
+
   // Filtered Orders for Dispatch Tab
   const filteredDispatchOrders = orders.filter((o) => {
     const matchesStatus = dispatchFilter === 'All' || o.status === dispatchFilter;
@@ -745,13 +816,38 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   // Variant Editor handlers
   const openProductVariantEditor = (product: Product) => {
     setEditingProduct(product);
+    setEditCategory(product.category || 'Tops');
+    setEditSizingType(inferSizingTypeFromProduct(product));
     setEditSizes([...product.sizes]);
+    setEditCustomSizeInput('');
     setEditStockBySize(getEffectiveStockMap(product));
     setEditColors([...product.colors]);
     setEditFloor(getProductFloor(product));
     setEditCeiling(getProductCeiling(product));
     setEditColorName('');
     setEditColorHex('#CCFF00');
+    setEditFormError(null);
+  };
+
+  const handleSelectEditSizingType = (nextType: SizingType) => {
+    setEditSizingType(nextType);
+    const preset = getSizingTypePreset(nextType);
+    if (nextType !== 'custom' && preset.defaultSelectedSizes.length > 0) {
+      const nextSizes = [...preset.defaultSelectedSizes];
+      setEditSizes(nextSizes);
+      setEditStockBySize((prev) => {
+        const nextMap = { ...prev };
+        for (const sz of nextSizes) {
+          if (typeof nextMap[sz] !== 'number') {
+            nextMap[sz] = nextType === 'accessories_one_size' ? 12 : 5;
+          }
+        }
+        return nextMap;
+      });
+    } else if (editSizes.length === 0) {
+      setEditSizes(['STD']);
+      setEditStockBySize((prev) => ({ ...prev, STD: prev.STD ?? 5 }));
+    }
   };
 
   const toggleEditSize = (sz: GarmentSize) => {
@@ -759,13 +855,25 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
       if (editSizes.length > 1) {
         setEditSizes(editSizes.filter((s) => s !== sz));
       }
-    } else {
+    } else if (editSizes.length < 10) {
       setEditSizes([...editSizes, sz]);
       setEditStockBySize((prev) => ({
         ...prev,
         [sz]: prev[sz] ?? 5,
       }));
     }
+  };
+
+  const handleAddEditCustomSize = () => {
+    const clean = editCustomSizeInput.trim().slice(0, 20);
+    if (!clean || editSizes.length >= 10) return;
+    if (editSizes.some((s) => s.toLowerCase() === clean.toLowerCase())) {
+      setEditCustomSizeInput('');
+      return;
+    }
+    setEditSizes([...editSizes, clean]);
+    setEditStockBySize((prev) => ({ ...prev, [clean]: prev[clean] ?? 5 }));
+    setEditCustomSizeInput('');
   };
 
   const handleAddEditColor = () => {
@@ -779,11 +887,19 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const handleSaveVariantEditor = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingProduct) return;
+    const safeCategory = editCategory.trim().slice(0, 60);
+    if (safeCategory.length < 2) {
+      setEditFormError('Category must be at least 2 characters.');
+      return;
+    }
+    setEditFormError(null);
     setIsSavingEdit(true);
     try {
       const safeFloor = Math.max(0, editFloor);
       const safeCeiling = Math.max(Math.max(1, safeFloor), editCeiling);
       await onUpdateProductVariantsAndStock(editingProduct, {
+        category: safeCategory,
+        sizingType: editSizingType,
         sizes: editSizes,
         colors: editColors.length > 0 ? editColors : [{ name: 'Pitch Carbon', hex: '#0F1115' }],
         stockBySize: editStockBySize,
@@ -797,15 +913,60 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   };
 
   // New Product Creator helpers
+  const applyNewSizingPreset = (nextType: SizingType, markManual = true) => {
+    setNewSizingType(nextType);
+    if (markManual) setSizingManuallyChanged(true);
+    const preset = getSizingTypePreset(nextType);
+    if (nextType !== 'custom' && preset.defaultSelectedSizes.length > 0) {
+      const nextSizes = [...preset.defaultSelectedSizes];
+      setNewSizes(nextSizes);
+      setNewStockBySize((prev) => {
+        const nextMap = { ...prev };
+        for (const sz of nextSizes) {
+          if (typeof nextMap[sz] !== 'number') {
+            nextMap[sz] = nextType === 'accessories_one_size' ? 12 : 6;
+          }
+        }
+        return nextMap;
+      });
+    } else if (newSizes.length === 0) {
+      setNewSizes(['STD']);
+      setNewStockBySize((prev) => ({ ...prev, STD: prev.STD ?? 6 }));
+    }
+  };
+
+  const handleNewCategoryChange = (nextCategoryValue: string, autoSyncSizing = true) => {
+    setNewCategory(nextCategoryValue);
+    setNewFormError(null);
+    if (autoSyncSizing && !sizingManuallyChanged) {
+      const suggested = suggestSizingTypeForCategory(nextCategoryValue);
+      if (suggested !== newSizingType) {
+        applyNewSizingPreset(suggested, false);
+      }
+    }
+  };
+
   const toggleNewSize = (size: GarmentSize) => {
     if (newSizes.includes(size)) {
       if (newSizes.length > 1) {
         setNewSizes(newSizes.filter((s) => s !== size));
       }
-    } else {
+    } else if (newSizes.length < 10) {
       setNewSizes([...newSizes, size]);
-      setNewStockBySize((prev) => ({ ...prev, [size]: prev[size] ?? 5 }));
+      setNewStockBySize((prev) => ({ ...prev, [size]: prev[size] ?? 6 }));
     }
+  };
+
+  const handleAddNewCustomSize = () => {
+    const clean = newCustomSizeInput.trim().slice(0, 20);
+    if (!clean || newSizes.length >= 10) return;
+    if (newSizes.some((s) => s.toLowerCase() === clean.toLowerCase())) {
+      setNewCustomSizeInput('');
+      return;
+    }
+    setNewSizes([...newSizes, clean]);
+    setNewStockBySize((prev) => ({ ...prev, [clean]: prev[clean] ?? 6 }));
+    setNewCustomSizeInput('');
   };
 
   const handleAddNewColor = () => {
@@ -821,6 +982,12 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const handleCreateProductSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
+    const safeCategory = newCategory.trim().slice(0, 60);
+    if (safeCategory.length < 2) {
+      setNewFormError('Please provide a category name (at least 2 characters).');
+      return;
+    }
+    setNewFormError(null);
 
     const cleanSizeStock: Partial<Record<GarmentSize, number>> = {};
     for (const sz of newSizes) {
@@ -837,7 +1004,8 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
       price: Number(newPrice) || 120,
       compareAtPrice: newComparePrice ? Number(newComparePrice) : undefined,
       currency: 'USD',
-      category: newCategory,
+      category: safeCategory,
+      sizingType: newSizingType,
       discipline: newDiscipline,
       image: newImage,
       detailImage: '/src/assets/images/craft_technical_fabric_1793037647097.jpg',
@@ -862,6 +1030,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     setNewTitle('');
     setNewTagline('');
     setNewDescription('');
+    setNewCategory('Tops');
+    setNewSizingType('apparel_alpha');
+    setSizingManuallyChanged(false);
+    setNewSizes(['XS', 'S', 'M', 'L', 'XL']);
+    setNewCustomSizeInput('');
     setIsCreatingProduct(false);
   };
 
@@ -926,7 +1099,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-black/90 backdrop-blur-md flex items-center justify-center p-3 sm:p-5">
       <div
-        className="relative bg-[#0b0d12] border border-[#232936] w-full max-w-6xl max-h-[94vh] overflow-hidden shadow-2xl flex flex-col"
+        className="relative bg-[#0b0d12] border border-[#232936] w-full max-w-7xl h-[92vh] max-h-[94vh] overflow-hidden shadow-2xl flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Admin Bar Header */}
@@ -955,7 +1128,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                   ? `Active Rights (${sessionAccount.permissions.length}/${ALL_STAFF_PERMISSIONS.length}): ${
                       sessionAccount.permissions.map(permissionLabel).join(' · ') || 'None Assigned'
                     }`
-                  : `Size & Color Variants · Floor/Ceiling Alarms · Order Dispatch Hub · ${
+                  : `Inventory · Floor/Ceiling Alarms · Order Dispatch Hub · ${
                       isSuperuser ? 'Staff & User Rights Profiles · ' : ''
                     }Integrations`}
               </p>
@@ -981,92 +1154,109 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
           </div>
         </div>
 
-        {/* Tab Navigation (Dynamically filtered by employee User Rights Profile) */}
-        <div className="flex flex-wrap border-b border-[#1d2330] bg-[#0e1118] px-4 sm:px-6 text-xs font-medium">
-          {canViewStock && (
-            <button
-              onClick={() => setActiveTab('stock')}
-              className={`py-3.5 px-4 border-b-2 uppercase tracking-wider flex items-center gap-2 transition-colors cursor-pointer ${
-                activeTab === 'stock'
-                  ? 'border-[#ccff00] text-white font-bold bg-[#141822]'
-                  : 'border-transparent text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Package className="w-4 h-4 text-[#ccff00]" />
-              <span>Stock &amp; Alarms ({products.length})</span>
-              {(breachedProducts.length > 0 || unacknowledgedAlarms.length > 0) && (
-                <span className="bg-amber-950 text-amber-300 border border-amber-600/40 px-1.5 text-[10px] font-mono font-bold flex items-center gap-1">
-                  <BellRing className="w-3 h-3" />
-                  {breachedProducts.length}
+        {/* Main Workspace Split: Left Navigation Tabs + Right Content Pane */}
+        <div className="flex flex-col sm:flex-row flex-1 min-h-0 overflow-hidden">
+          {/* Left Tab Navigation (Dynamically filtered by employee User Rights Profile) */}
+          <aside
+            aria-label="Operations Console Navigation"
+            className="w-full sm:w-56 md:w-64 lg:w-72 shrink-0 border-b sm:border-b-0 sm:border-r border-[#1d2330] bg-[#0d1017] p-3 flex flex-row sm:flex-col gap-1.5 overflow-x-auto sm:overflow-y-auto text-xs font-medium"
+          >
+            <span className="hidden sm:block px-3 pt-1 pb-2 text-[10px] font-mono uppercase tracking-widest text-slate-500 border-b border-[#191f2c] mb-1">
+              Operations Modules
+            </span>
+
+            {canViewStock && (
+              <button
+                onClick={() => setActiveTab('stock')}
+                className={`w-auto sm:w-full py-3 px-3.5 border-l-2 uppercase tracking-wider flex items-center justify-between gap-2 transition-colors cursor-pointer shrink-0 text-left ${
+                  activeTab === 'stock'
+                    ? 'border-[#ccff00] text-white font-bold bg-[#141925]'
+                    : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-[#111520]'
+                }`}
+              >
+                <span className="flex items-center gap-2.5 min-w-0">
+                  <Package className="w-4 h-4 text-[#ccff00] shrink-0" />
+                  <span className="truncate">Stock &amp; Alarms ({products.length})</span>
                 </span>
-              )}
-            </button>
-          )}
+                {(breachedProducts.length > 0 || unacknowledgedAlarms.length > 0) && (
+                  <span className="bg-amber-950 text-amber-300 border border-amber-600/40 px-1.5 py-0.5 text-[10px] font-mono font-bold flex items-center gap-1 shrink-0">
+                    <BellRing className="w-3 h-3" />
+                    {breachedProducts.length}
+                  </span>
+                )}
+              </button>
+            )}
 
-          {canManageCatalog && (
-            <button
-              onClick={() => setActiveTab('products')}
-              className={`py-3.5 px-4 border-b-2 uppercase tracking-wider flex items-center gap-2 transition-colors cursor-pointer ${
-                activeTab === 'products'
-                  ? 'border-[#ccff00] text-white font-bold bg-[#141822]'
-                  : 'border-transparent text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Layers className="w-4 h-4 text-[#ccff00]" />
-              <span>Sizes, Colors &amp; Catalog</span>
-            </button>
-          )}
-
-          {canViewDispatch && (
-            <button
-              onClick={() => setActiveTab('dispatch')}
-              className={`py-3.5 px-4 border-b-2 uppercase tracking-wider flex items-center gap-2 transition-colors cursor-pointer ${
-                activeTab === 'dispatch'
-                  ? 'border-[#ccff00] text-white font-bold bg-[#141822]'
-                  : 'border-transparent text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Truck className="w-4 h-4 text-[#ccff00]" />
-              <span>Order Dispatch ({orders.length})</span>
-              {pendingOrdersCount > 0 && (
-                <span className="bg-[#1b2712] text-[#ccff00] border border-[#ccff00]/40 px-1.5 text-[10px] font-mono font-bold">
-                  {pendingOrdersCount} Queue
+            {canManageCatalog && (
+              <button
+                onClick={() => setActiveTab('products')}
+                className={`w-auto sm:w-full py-3 px-3.5 border-l-2 uppercase tracking-wider flex items-center justify-between gap-2 transition-colors cursor-pointer shrink-0 text-left ${
+                  activeTab === 'products'
+                    ? 'border-[#ccff00] text-white font-bold bg-[#141925]'
+                    : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-[#111520]'
+                }`}
+              >
+                <span className="flex items-center gap-2.5 min-w-0">
+                  <Layers className="w-4 h-4 text-[#ccff00] shrink-0" />
+                  <span className="truncate">Inventory ({products.length})</span>
                 </span>
-              )}
-            </button>
-          )}
+              </button>
+            )}
 
-          {isSuperuser && (
-            <button
-              onClick={() => setActiveTab('staff')}
-              className={`py-3.5 px-4 border-b-2 uppercase tracking-wider flex items-center gap-2 transition-colors cursor-pointer ${
-                activeTab === 'staff'
-                  ? 'border-[#ccff00] text-white font-bold bg-[#141822]'
-                  : 'border-transparent text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Users className="w-4 h-4 text-[#ccff00]" />
-              <span>Staff &amp; Rights Profiles ({staffList.length})</span>
-            </button>
-          )}
+            {canViewDispatch && (
+              <button
+                onClick={() => setActiveTab('dispatch')}
+                className={`w-auto sm:w-full py-3 px-3.5 border-l-2 uppercase tracking-wider flex items-center justify-between gap-2 transition-colors cursor-pointer shrink-0 text-left ${
+                  activeTab === 'dispatch'
+                    ? 'border-[#ccff00] text-white font-bold bg-[#141925]'
+                    : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-[#111520]'
+                }`}
+              >
+                <span className="flex items-center gap-2.5 min-w-0">
+                  <Truck className="w-4 h-4 text-[#ccff00] shrink-0" />
+                  <span className="truncate">Order Dispatch ({orders.length})</span>
+                </span>
+                {pendingOrdersCount > 0 && (
+                  <span className="bg-[#1b2712] text-[#ccff00] border border-[#ccff00]/40 px-1.5 py-0.5 text-[10px] font-mono font-bold shrink-0">
+                    {pendingOrdersCount}
+                  </span>
+                )}
+              </button>
+            )}
 
-          {canManageIntegrations && (
-            <button
-              onClick={() => setActiveTab('integrations')}
-              className={`py-3.5 px-4 border-b-2 uppercase tracking-wider flex items-center gap-2 transition-colors cursor-pointer ${
-                activeTab === 'integrations'
-                  ? 'border-[#ccff00] text-white font-bold bg-[#141822]'
-                  : 'border-transparent text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Database className="w-4 h-4 text-[#ccff00]" />
-              <span>Integrations</span>
-            </button>
-          )}
-        </div>
+            {isSuperuser && (
+              <button
+                onClick={() => setActiveTab('staff')}
+                className={`w-auto sm:w-full py-3 px-3.5 border-l-2 uppercase tracking-wider flex items-center justify-between gap-2 transition-colors cursor-pointer shrink-0 text-left ${
+                  activeTab === 'staff'
+                    ? 'border-[#ccff00] text-white font-bold bg-[#141925]'
+                    : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-[#111520]'
+                }`}
+              >
+                <span className="flex items-center gap-2.5 min-w-0">
+                  <Users className="w-4 h-4 text-[#ccff00] shrink-0" />
+                  <span className="truncate">Staff &amp; Rights ({staffList.length})</span>
+                </span>
+              </button>
+            )}
 
-        {/* Tab Body */}
-        <div className="p-6 overflow-y-auto flex-1 max-h-[75vh]">
+            {canManageIntegrations && (
+              <button
+                onClick={() => setActiveTab('integrations')}
+                className={`w-auto sm:w-full py-3 px-3.5 border-l-2 uppercase tracking-wider flex items-center gap-2.5 transition-colors cursor-pointer shrink-0 text-left ${
+                  activeTab === 'integrations'
+                    ? 'border-[#ccff00] text-white font-bold bg-[#141925]'
+                    : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-[#111520]'
+                }`}
+              >
+                <Database className="w-4 h-4 text-[#ccff00] shrink-0" />
+                <span className="truncate">Integrations</span>
+              </button>
+            )}
+          </aside>
+
+          {/* Right Tab Body */}
+          <div className="p-6 overflow-y-auto flex-1 min-w-0">
           {/* ================= TAB 1: PER-SIZE STOCK MANAGEMENT & ALARMS ================= */}
           {activeTab === 'stock' && canViewStock && (
             <div className="space-y-6">
@@ -1267,10 +1457,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                     className="bg-[#161a24] border border-[#262e3e] text-xs text-white px-2.5 py-1.5 focus:outline-none focus:border-[#ccff00]"
                   >
                     <option value="all">All Categories</option>
-                    <option value="Tops">Tops</option>
-                    <option value="Bottoms">Bottoms</option>
-                    <option value="Outerwear">Outerwear</option>
-                    <option value="Accessories">Accessories</option>
+                    {availableCategories.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -1527,17 +1718,17 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
             </div>
           )}
 
-          {/* ================= TAB 2: SIZES, COLORS & PRODUCT CATALOG ================= */}
+          {/* ================= TAB 2: INVENTORY (PRODUCTS LIST, CATEGORIES, SIZES & COLORS) ================= */}
           {activeTab === 'products' && canManageCatalog && (
             <div className="space-y-6">
               {/* Top Banner */}
               <div className="p-4 bg-[#11141c] border border-[#1f2533] flex flex-wrap items-center justify-between gap-4">
                 <div>
                   <h3 className="text-sm font-bold text-white uppercase tracking-tight">
-                    Sizes, Color Variants &amp; Technical Garment Catalog
+                    Inventory
                   </h3>
                   <p className="text-xs text-slate-400">
-                    Upload new garments or edit sizes, color swatches, per-size stock, and floor/ceiling limits.
+                    All store products displayed in list view with flexible categories, sizing type presets, color variants, and stock thresholds.
                   </p>
                 </div>
 
@@ -1549,11 +1740,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                   className="px-5 py-2.5 bg-[#ccff00] hover:bg-[#b8e600] text-black font-bold uppercase tracking-wider text-xs transition-colors flex items-center gap-1.5 cursor-pointer shadow-md"
                 >
                   <Plus className="w-4 h-4" />
-                  <span>{isCreatingProduct ? 'Close Creator' : 'Upload New Product'}</span>
+                  <span>{isCreatingProduct ? 'Close Form' : 'Add Product'}</span>
                 </button>
               </div>
 
-              {/* Existing Product Variant / Size / Color / Stock Editor */}
+              {/* Existing Product Variant / Category / Sizing Type / Size / Color / Stock Editor */}
               {editingProduct && (
                 <form
                   onSubmit={handleSaveVariantEditor}
@@ -1563,7 +1754,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                     <div className="flex items-center gap-2">
                       <SlidersHorizontal className="w-4 h-4 text-[#ccff00]" />
                       <h4 className="text-sm font-bold uppercase tracking-wider text-white">
-                        Edit Sizes, Color Variants &amp; Stock — {editingProduct.title}
+                        Edit Inventory Item — {editingProduct.title}
                       </h4>
                     </div>
                     <button
@@ -1575,13 +1766,100 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                     </button>
                   </div>
 
-                  {/* Sizes & Per-Size Stock */}
-                  <div className="space-y-3">
-                    <label className="block text-slate-300 uppercase font-mono font-bold">
-                      1. Enabled Garment Sizes &amp; Stock Per Size
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                      {ALL_GARMENT_SIZES.map((sz) => {
+                  {editFormError && (
+                    <div className="p-2.5 bg-rose-950/60 border border-rose-700/60 text-rose-200 text-xs font-mono">
+                      {editFormError}
+                    </div>
+                  )}
+
+                  {/* Flexible Category Classification */}
+                  <div className="p-3.5 bg-[#121620] border border-[#222938] space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label
+                        htmlFor="inventory-edit-category"
+                        className="block text-slate-200 uppercase font-mono font-bold"
+                      >
+                        Product Category *
+                      </label>
+                      <span className="text-[11px] font-mono text-[#ccff00]">
+                        Assigned: {editCategory || '—'}
+                      </span>
+                    </div>
+                    <input
+                      id="inventory-edit-category"
+                      type="text"
+                      required
+                      minLength={2}
+                      maxLength={60}
+                      value={editCategory}
+                      onChange={(e) => {
+                        setEditCategory(e.target.value);
+                        setEditFormError(null);
+                      }}
+                      placeholder="Type a custom category or click a preset below..."
+                      className="w-full bg-[#151924] border border-[#262e3e] text-white px-3 py-2 text-xs font-mono focus:outline-none focus:border-[#ccff00]"
+                    />
+                    <div className="flex flex-wrap gap-1.5">
+                      {availableCategories.map((cat) => (
+                        <button
+                          key={cat}
+                          type="button"
+                          onClick={() => {
+                            setEditCategory(cat);
+                            setEditFormError(null);
+                          }}
+                          className={`px-3 py-1 text-[11px] font-mono font-bold uppercase border cursor-pointer transition-colors ${
+                            editCategory.trim().toLowerCase() === cat.toLowerCase()
+                              ? 'bg-[#ccff00] text-black border-[#ccff00]'
+                              : 'bg-[#151924] text-slate-300 border-[#262e3e] hover:text-white'
+                          }`}
+                        >
+                          {cat}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Sizing Type Preset & Per-Size Stock */}
+                  <div className="p-3.5 bg-[#121620] border border-[#222938] space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label className="block text-slate-200 uppercase font-mono font-bold">
+                        1. Sizing Type &amp; Preset Sizes ({editSizes.length}/10 Selected)
+                      </label>
+                      <span className="text-[11px] font-mono text-[#ccff00]">
+                        Preset: {getSizingTypePreset(editSizingType).label}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {SIZING_TYPE_PRESETS.map((preset) => (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => handleSelectEditSizingType(preset.id)}
+                          className={`p-2 border text-left transition-colors cursor-pointer ${
+                            editSizingType === preset.id
+                              ? 'bg-[#192312] border-[#ccff00] text-white'
+                              : 'bg-[#151924] border-[#262e3e] text-slate-300 hover:border-slate-500'
+                          }`}
+                        >
+                          <div className="text-[11px] font-mono font-bold text-[#ccff00]">
+                            {preset.shortLabel}
+                          </div>
+                          <div className="text-[10px] text-slate-400 truncate">
+                            {preset.defaultSelectedSizes.join(', ')}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {Array.from(
+                        new Set([
+                          ...getSizingTypePreset(editSizingType).availableSizes,
+                          ...editSizes,
+                        ])
+                      ).map((sz) => {
                         const isChecked = editSizes.includes(sz);
                         return (
                           <button
@@ -1600,11 +1878,37 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                       })}
                     </div>
 
+                    {editSizes.length < 10 && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="text"
+                          value={editCustomSizeInput}
+                          onChange={(e) => setEditCustomSizeInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddEditCustomSize();
+                            }
+                          }}
+                          maxLength={20}
+                          placeholder="Add custom size label (e.g. US 10.5, 42 EU, Tall L)"
+                          className="flex-1 min-w-[200px] bg-[#151924] border border-[#262e3e] text-white px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-[#ccff00]"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddEditCustomSize}
+                          className="px-3 py-1.5 bg-[#1b2414] hover:bg-[#27351b] text-[#ccff00] border border-[#ccff00]/40 font-mono uppercase text-xs font-bold cursor-pointer"
+                        >
+                          + Add Size
+                        </button>
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5 pt-1">
                       {editSizes.map((sz) => (
                         <div key={sz} className="p-2.5 bg-[#141822] border border-[#262e3e] font-mono">
-                          <label className="text-[10px] text-[#ccff00] font-bold block mb-1">
-                            Size {sz} Stock
+                          <label className="text-[10px] text-[#ccff00] font-bold block mb-1 truncate">
+                            {sz} Stock
                           </label>
                           <input
                             type="number"
@@ -1737,7 +2041,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                       className="px-6 py-2 bg-[#ccff00] hover:bg-[#b8e600] text-black font-bold uppercase tracking-wider text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                     >
                       <Check className="w-4 h-4" />
-                      <span>{isSavingEdit ? 'Saving Variants...' : 'Save Variants & Stock'}</span>
+                      <span>{isSavingEdit ? 'Saving Inventory...' : 'Save Inventory Item'}</span>
                     </button>
                   </div>
                 </form>
@@ -1750,7 +2054,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                     <div className="flex items-center gap-2">
                       <Plus className="w-4 h-4 text-[#ccff00]" />
                       <h4 className="text-sm font-bold uppercase tracking-wider text-white">
-                        Upload Product Specification, Sizes, Colors &amp; Stock
+                        Add Inventory Product
                       </h4>
                     </div>
                     <span className="text-xs font-mono text-[#ccff00]">
@@ -1759,6 +2063,61 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                   </div>
 
                   <form onSubmit={handleCreateProductSubmit} className="space-y-4 text-xs">
+                    {newFormError && (
+                      <div className="p-2.5 bg-rose-950/60 border border-rose-700/60 text-rose-200 text-xs font-mono">
+                        {newFormError}
+                      </div>
+                    )}
+
+                    {/* Product Category Classification (Preset Chips or Custom Entry) */}
+                    <div className="p-3.5 bg-[#121620] border border-[#222938] space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label
+                          htmlFor="inventory-new-category"
+                          className="block text-slate-200 uppercase font-mono font-bold"
+                        >
+                          Product Category Classification *
+                        </label>
+                        <span className="text-[11px] font-mono text-[#ccff00]">
+                          Category: {newCategory || '—'}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <input
+                          id="inventory-new-category"
+                          type="text"
+                          required
+                          minLength={2}
+                          maxLength={60}
+                          value={newCategory}
+                          onChange={(e) => handleNewCategoryChange(e.target.value, true)}
+                          placeholder="Enter custom category (e.g. Track Spikes, Compression) or pick below..."
+                          className="flex-1 bg-[#151924] border border-[#262e3e] text-white px-3 py-2 text-xs font-mono focus:outline-none focus:border-[#ccff00]"
+                        />
+                        <span className="text-[11px] text-slate-400">
+                          Auto-suggests matching sizing type
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {availableCategories.map((cat) => (
+                          <button
+                            key={cat}
+                            type="button"
+                            onClick={() => handleNewCategoryChange(cat, true)}
+                            className={`px-3 py-1.5 border text-[11px] font-mono font-bold uppercase transition-colors cursor-pointer ${
+                              newCategory.trim().toLowerCase() === cat.toLowerCase()
+                                ? 'bg-[#ccff00] text-black border-[#ccff00]'
+                                : 'bg-[#161a24] text-slate-300 border-[#283144] hover:text-white hover:border-slate-500'
+                            }`}
+                          >
+                            {cat}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
                         <label className="block text-slate-400 uppercase font-medium mb-1">
@@ -1876,54 +2235,70 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-slate-400 uppercase font-medium mb-1">
-                          Category *
-                        </label>
-                        <select
-                          value={newCategory}
-                          onChange={(e) => setNewCategory(e.target.value as any)}
-                          className="w-full bg-[#151924] border border-[#262e3e] text-white px-3 py-2 text-xs focus:outline-none focus:border-[#ccff00]"
-                        >
-                          <option value="Tops">Tops</option>
-                          <option value="Bottoms">Bottoms</option>
-                          <option value="Outerwear">Outerwear</option>
-                          <option value="Accessories">Accessories</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-400 uppercase font-medium mb-1">
-                          Discipline Target *
-                        </label>
-                        <select
-                          value={newDiscipline}
-                          onChange={(e) => setNewDiscipline(e.target.value as any)}
-                          className="w-full bg-[#151924] border border-[#262e3e] text-white px-3 py-2 text-xs focus:outline-none focus:border-[#ccff00]"
-                        >
-                          <option value="Track & Field">Track & Field</option>
-                          <option value="Pitch & Field">Pitch & Field</option>
-                          <option value="Endurance">Endurance</option>
-                          <option value="Recovery">Recovery</option>
-                          <option value="All">All Disciplines</option>
-                        </select>
-                      </div>
+                    <div>
+                      <label className="block text-slate-400 uppercase font-medium mb-1">
+                        Discipline Target *
+                      </label>
+                      <select
+                        value={newDiscipline}
+                        onChange={(e) => setNewDiscipline(e.target.value as Product['discipline'])}
+                        className="w-full sm:w-64 bg-[#151924] border border-[#262e3e] text-white px-3 py-2 text-xs focus:outline-none focus:border-[#ccff00]"
+                      >
+                        <option value="Track & Field">Track &amp; Field</option>
+                        <option value="Pitch & Field">Pitch &amp; Field</option>
+                        <option value="Endurance">Endurance</option>
+                        <option value="Recovery">Recovery</option>
+                        <option value="All">All Disciplines</option>
+                      </select>
                     </div>
 
-                    {/* Sizes + Per-Size Stock Upload */}
+                    {/* Sizing Type Preset + Per-Size Stock Upload */}
                     <div className="p-3.5 bg-[#121620] border border-[#222938] space-y-3">
-                      <div className="flex items-center justify-between">
-                        <label className="text-slate-300 uppercase font-mono font-bold">
-                          Garment Sizes &amp; Initial Stock Per Size
-                        </label>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <label className="text-slate-200 uppercase font-mono font-bold block">
+                            Sizing Type &amp; Preset Sizes ({newSizes.length}/10 Selected)
+                          </label>
+                          <span className="text-[11px] text-slate-400">
+                            {getSizingTypePreset(newSizingType).description}
+                          </span>
+                        </div>
                         <span className="text-[11px] font-mono text-[#ccff00]">
                           Combined Total: {computedNewTotalStock} units
                         </span>
                       </div>
 
-                      <div className="flex flex-wrap gap-2">
-                        {ALL_GARMENT_SIZES.map((sz) => {
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {SIZING_TYPE_PRESETS.map((preset) => (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => applyNewSizingPreset(preset.id, true)}
+                            className={`p-2 border text-left transition-colors cursor-pointer ${
+                              newSizingType === preset.id
+                                ? 'bg-[#192312] border-[#ccff00] text-white'
+                                : 'bg-[#151924] border-[#262e3e] text-slate-300 hover:border-slate-500'
+                            }`}
+                          >
+                            <div className="text-[11px] font-mono font-bold text-[#ccff00]">
+                              {preset.shortLabel}
+                            </div>
+                            <div className="text-[10px] text-slate-400 truncate">
+                              {preset.defaultSelectedSizes.length > 0
+                                ? preset.defaultSelectedSizes.join(', ')
+                                : 'Define custom labels'}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {Array.from(
+                          new Set([
+                            ...getSizingTypePreset(newSizingType).availableSizes,
+                            ...newSizes,
+                          ])
+                        ).map((sz) => {
                           const isChecked = newSizes.includes(sz);
                           return (
                             <button
@@ -1942,10 +2317,36 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                         })}
                       </div>
 
+                      {newSizes.length < 10 && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            type="text"
+                            value={newCustomSizeInput}
+                            onChange={(e) => setNewCustomSizeInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                handleAddNewCustomSize();
+                              }
+                            }}
+                            maxLength={20}
+                            placeholder="Add custom size label (e.g. US 10.5, 42 EU, Tall XL)"
+                            className="flex-1 min-w-[200px] bg-[#151924] border border-[#262e3e] text-white px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-[#ccff00]"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleAddNewCustomSize}
+                            className="px-3 py-1.5 bg-[#1b2414] hover:bg-[#27351b] text-[#ccff00] border border-[#ccff00]/40 font-mono uppercase text-xs font-bold cursor-pointer"
+                          >
+                            + Add Size
+                          </button>
+                        </div>
+                      )}
+
                       <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
                         {newSizes.map((sz) => (
                           <div key={sz} className="p-2 bg-[#161a24] border border-[#262e3e] font-mono">
-                            <span className="text-[10px] text-slate-300 block mb-1">
+                            <span className="text-[10px] text-slate-300 block mb-1 truncate">
                               {sz} Units
                             </span>
                             <input
@@ -2104,60 +2505,115 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                         className="px-6 py-2.5 bg-[#ccff00] hover:bg-[#b8e600] text-black font-bold uppercase tracking-wider text-xs transition-colors flex items-center gap-1.5 cursor-pointer shadow-md"
                       >
                         <Check className="w-4 h-4" />
-                        <span>Publish &amp; Add to Store Catalog</span>
+                        <span>Add to Inventory</span>
                       </button>
                     </div>
                   </form>
                 </div>
               )}
 
-              {/* Current Product Catalog Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {products.map((p) => {
-                  const health = evaluateProductStockHealth(p);
-                  const sizeMap = getEffectiveStockMap(p);
-                  return (
-                    <div
-                      key={p.id}
-                      className="p-4 bg-[#10141d] border border-[#1f2636] flex flex-col justify-between space-y-3"
-                    >
-                      <div>
-                        <div className="flex gap-3 mb-3">
+              {/* Inventory Search & Dynamic Category Filter Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="relative flex-1 min-w-[220px] max-w-sm">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={inventorySearch}
+                    onChange={(e) => setInventorySearch(e.target.value)}
+                    placeholder="Filter inventory list by title, category, color..."
+                    className="w-full bg-[#121620] border border-[#222938] text-white pl-8 pr-3 py-2 text-xs focus:outline-none focus:border-[#ccff00]"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setInventoryCategoryFilter('all')}
+                    className={`px-3 py-1.5 text-[11px] font-mono uppercase border cursor-pointer transition-colors ${
+                      inventoryCategoryFilter === 'all'
+                        ? 'bg-[#ccff00] text-black border-[#ccff00] font-bold'
+                        : 'bg-[#121620] text-slate-300 border-[#222938] hover:text-white'
+                    }`}
+                  >
+                    All ({products.length})
+                  </button>
+                  {inUseCategories.map((cat) => {
+                    const count = products.filter(
+                      (p) => p.category.toLowerCase() === cat.toLowerCase()
+                    ).length;
+                    return (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => setInventoryCategoryFilter(cat)}
+                        className={`px-3 py-1.5 text-[11px] font-mono uppercase border cursor-pointer transition-colors ${
+                          inventoryCategoryFilter.toLowerCase() === cat.toLowerCase()
+                            ? 'bg-[#ccff00] text-black border-[#ccff00] font-bold'
+                            : 'bg-[#121620] text-slate-300 border-[#222938] hover:text-white'
+                        }`}
+                      >
+                        {cat} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* All Products List View */}
+              <div className="border border-[#1f2636] bg-[#0e121a] divide-y divide-[#1b2230]">
+                {/* List Column Header */}
+                <div className="hidden lg:grid lg:grid-cols-12 gap-4 px-4 py-2.5 bg-[#121621] text-[10px] font-mono uppercase tracking-wider text-slate-400">
+                  <div className="col-span-4">Product</div>
+                  <div className="col-span-2">Category &amp; Sizing</div>
+                  <div className="col-span-3">Sizes &amp; Stock</div>
+                  <div className="col-span-2">Colors &amp; Health</div>
+                  <div className="col-span-1 text-right">Actions</div>
+                </div>
+
+                {filteredInventoryList.length === 0 ? (
+                  <div className="p-8 text-center text-xs text-slate-400 font-mono">
+                    No inventory products match your current filter.
+                  </div>
+                ) : (
+                  filteredInventoryList.map((p) => {
+                    const health = evaluateProductStockHealth(p);
+                    const sizeMap = getEffectiveStockMap(p);
+                    const sizingPreset = getSizingTypePreset(inferSizingTypeFromProduct(p));
+                    return (
+                      <div
+                        key={p.id}
+                        className="p-4 hover:bg-[#121722] transition-colors grid grid-cols-1 lg:grid-cols-12 gap-4 items-center"
+                      >
+                        {/* Product Summary */}
+                        <div className="lg:col-span-4 flex items-center gap-3 min-w-0">
                           <img
                             src={p.image}
                             alt={p.title}
                             referrerPolicy="no-referrer"
-                            className="w-16 h-16 object-cover bg-black border border-[#252d3f] shrink-0"
+                            className="w-12 h-12 object-cover bg-black border border-[#252d3f] shrink-0"
                           />
                           <div className="min-w-0">
-                            <span className="text-[10px] uppercase font-mono text-[#ccff00] block">
-                              {p.discipline} · {p.category}
-                            </span>
                             <h4 className="text-white font-bold text-xs truncate">{p.title}</h4>
-                            <span className="text-xs font-mono font-bold text-white block mt-1">
-                              ${p.price} USD
-                            </span>
+                            <div className="flex flex-wrap items-center gap-2 mt-1 text-[11px] font-mono">
+                              <span className="text-white font-bold">${p.price} USD</span>
+                              <span className="text-slate-500">·</span>
+                              <span className="text-slate-400">{p.discipline}</span>
+                            </div>
                           </div>
                         </div>
 
-                        {/* Colors preview */}
-                        <div className="flex flex-wrap items-center gap-1.5 mb-2.5">
-                          {p.colors.map((c) => (
-                            <span
-                              key={c.name}
-                              className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-[#151923] border border-[#262e3e] text-[10px] text-slate-300 font-mono"
-                            >
-                              <span
-                                className="w-2.5 h-2.5 rounded-full border border-white/25"
-                                style={{ backgroundColor: c.hex }}
-                              />
-                              {c.name}
-                            </span>
-                          ))}
+                        {/* Category & Sizing Type */}
+                        <div className="lg:col-span-2 flex flex-col items-start gap-1">
+                          <span className="inline-block px-2.5 py-0.5 bg-[#171d29] border border-[#2c364a] text-[#ccff00] text-[11px] font-mono uppercase font-bold">
+                            {p.category}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-400 uppercase">
+                            {sizingPreset.shortLabel}
+                          </span>
                         </div>
 
-                        {/* Sizes & per-size counts */}
-                        <div className="flex flex-wrap gap-1 font-mono text-[10px]">
+                        {/* Sizes & Per-Size Counts */}
+                        <div className="lg:col-span-3 flex flex-wrap gap-1 font-mono text-[10px]">
                           {p.sizes.map((sz) => (
                             <span
                               key={sz}
@@ -2167,35 +2623,56 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                             </span>
                           ))}
                         </div>
-                      </div>
 
-                      <div className="pt-3 border-t border-[#1a202d] flex items-center justify-between gap-2">
-                        <div className="text-[11px] font-mono text-slate-400">
-                          <span>Total: </span>
-                          <strong
-                            className={
-                              health.state === 'OUT_OF_STOCK'
-                                ? 'text-rose-400'
-                                : health.state === 'BELOW_FLOOR'
-                                ? 'text-amber-300'
-                                : 'text-[#ccff00]'
-                            }
-                          >
-                            {health.totalStock}
-                          </strong>
-                          <span className="text-slate-500">
-                            {' '}
-                            (F:{health.floor} / C:{health.ceiling})
-                          </span>
+                        {/* Colors & Stock Total */}
+                        <div className="lg:col-span-2 space-y-1.5">
+                          <div className="flex flex-wrap items-center gap-1">
+                            {p.colors.map((c) => (
+                              <span
+                                key={c.name}
+                                title={c.name}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-[#151923] border border-[#262e3e] text-[10px] text-slate-300 font-mono"
+                              >
+                                <span
+                                  className="w-2 h-2 rounded-full border border-white/25"
+                                  style={{ backgroundColor: c.hex }}
+                                />
+                                <span className="truncate max-w-[70px]">{c.name}</span>
+                              </span>
+                            ))}
+                          </div>
+                          <div className="text-[11px] font-mono text-slate-400">
+                            <span>Total: </span>
+                            <strong
+                              className={
+                                health.state === 'OUT_OF_STOCK'
+                                  ? 'text-rose-400'
+                                  : health.state === 'BELOW_FLOOR'
+                                  ? 'text-amber-300'
+                                  : health.state === 'ABOVE_CEILING'
+                                  ? 'text-sky-300'
+                                  : 'text-[#ccff00]'
+                              }
+                            >
+                              {health.totalStock}
+                            </strong>
+                            <span className="text-slate-500">
+                              {' '}
+                              (F:{health.floor} / C:{health.ceiling})
+                            </span>
+                          </div>
                         </div>
 
-                        <div className="flex items-center gap-1.5">
+                        {/* Actions */}
+                        <div className="lg:col-span-1 flex items-center lg:justify-end gap-1.5">
                           <button
                             type="button"
                             onClick={() => openProductVariantEditor(p)}
-                            className="px-2.5 py-1 bg-[#161b26] hover:bg-[#222a3a] text-[#ccff00] border border-[#2a3448] text-[10px] font-mono uppercase cursor-pointer"
+                            className="px-2.5 py-1.5 bg-[#161b26] hover:bg-[#222a3a] text-[#ccff00] border border-[#2a3448] text-[10px] font-mono uppercase cursor-pointer flex items-center gap-1"
+                            title="Edit product category, sizing type, sizes, colors, and stock"
                           >
-                            Edit Variants
+                            <Edit className="w-3 h-3" />
+                            <span>Edit</span>
                           </button>
 
                           {confirmDeleteId === p.id ? (
@@ -2230,9 +2707,16 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                           )}
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="text-[11px] font-mono text-slate-500 flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  Showing {filteredInventoryList.length} of {products.length} inventory products
+                </span>
+                <span>Active Categories: {inUseCategories.join(' · ') || 'None'}</span>
               </div>
             </div>
           )}
@@ -3375,6 +3859,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
               </div>
             </div>
           )}
+          </div>
         </div>
 
         {/* Admin Modal Footer */}

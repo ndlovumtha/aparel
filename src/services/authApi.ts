@@ -205,6 +205,8 @@ export function updateProductVariantsOnServerApi(
   productId: string,
   baseProduct: Product,
   updates: {
+    category?: Product['category'];
+    sizingType?: Product['sizingType'];
     sizes?: GarmentSize[];
     colors?: { name: string; hex: string }[];
     stockBySize?: Partial<Record<GarmentSize, number>>;

@@ -3,6 +3,8 @@ import { Product } from '../types/store';
 import {
   evaluateProductStockHealth,
   getProductSizeStock,
+  getSizingTypePreset,
+  inferSizingTypeFromProduct,
 } from '../utils/inventory';
 import { X, Check, Ruler, Truck, AlertCircle, CheckCircle2, XCircle } from 'lucide-react';
 
@@ -241,9 +243,14 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
             {/* Size Selector with Per-Size Availability */}
             <div className="mb-5">
               <div className="flex items-center justify-between text-xs mb-2">
-                <span className="text-slate-400 uppercase font-medium">
-                  Athlete Size (Live Stock):
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-400 uppercase font-medium">
+                    Size (Live Stock):
+                  </span>
+                  <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 bg-[#161a23] border border-[#252c3b] text-[#ccff00]">
+                    {getSizingTypePreset(inferSizingTypeFromProduct(product)).shortLabel}
+                  </span>
+                </div>
                 <button
                   type="button"
                   onClick={onOpenFitGuide}

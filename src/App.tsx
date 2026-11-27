@@ -497,6 +497,8 @@ export default function App() {
   const handleUpdateProductVariantsAndStock = async (
     product: Product,
     updates: {
+      category?: Product['category'];
+      sizingType?: Product['sizingType'];
       sizes?: GarmentSize[];
       colors?: { name: string; hex: string }[];
       stockBySize?: Partial<Record<GarmentSize, number>>;

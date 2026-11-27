@@ -39,13 +39,7 @@ service cloud.firestore {
 
     function isValidStockBySizeMap(stockMap) {
       return stockMap is map
-        && stockMap.keys().hasOnly(['XS', 'S', 'M', 'L', 'XL', 'XXL'])
-        && (!('XS' in stockMap) || (stockMap.XS is number && stockMap.XS >= 0 && stockMap.XS <= 100000))
-        && (!('S' in stockMap) || (stockMap.S is number && stockMap.S >= 0 && stockMap.S <= 100000))
-        && (!('M' in stockMap) || (stockMap.M is number && stockMap.M >= 0 && stockMap.M <= 100000))
-        && (!('L' in stockMap) || (stockMap.L is number && stockMap.L >= 0 && stockMap.L <= 100000))
-        && (!('XL' in stockMap) || (stockMap.XL is number && stockMap.XL >= 0 && stockMap.XL <= 100000))
-        && (!('XXL' in stockMap) || (stockMap.XXL is number && stockMap.XXL >= 0 && stockMap.XXL <= 100000));
+        && stockMap.keys().size() <= 10;
     }
 
     // 3. Entity Validation Blueprints (Anti-Update-Gap)
@@ -59,7 +53,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'shopifyId', 'title', 'handle', 'tagline', 'description',
-          'price', 'compareAtPrice', 'currency', 'category', 'discipline',
+          'price', 'compareAtPrice', 'currency', 'category', 'sizingType', 'discipline',
           'image', 'detailImage', 'sizes', 'colors', 'inStock',
           'inventoryQuantity', 'stockBySize', 'stockFloor', 'stockCeiling',
           'weightGsm', 'fabricSpecs', 'athleteFitNotes',
@@ -73,12 +67,13 @@ service cloud.firestore {
         && data.price is number && data.price > 0 && data.price <= 100000
         && (!('compareAtPrice' in data) || (data.compareAtPrice is number && data.compareAtPrice >= 0 && data.compareAtPrice <= 100000))
         && data.currency in ['USD', 'EUR', 'GBP']
-        && data.category in ['Tops', 'Bottoms', 'Outerwear', 'Accessories']
+        && data.category is string && data.category.size() >= 2 && data.category.size() <= 60
+        && (!('sizingType' in data) || (data.sizingType is string && data.sizingType in ['apparel_alpha', 'bottoms_waist', 'footwear_us', 'dual_fit', 'accessories_one_size', 'youth_alpha', 'custom']))
         && data.discipline in ['Track & Field', 'Pitch & Field', 'Endurance', 'Recovery', 'All']
         && data.image is string && data.image.size() >= 1 && data.image.size() <= 500
         && (!('detailImage' in data) || (data.detailImage is string && data.detailImage.size() <= 500))
-        && data.sizes is list && data.sizes.size() >= 1 && data.sizes.size() <= 6
-        && data.sizes.hasOnly(['XS', 'S', 'M', 'L', 'XL', 'XXL'])
+        && data.sizes is list && data.sizes.size() >= 1 && data.sizes.size() <= 10
+        && data.sizes[0] is string && data.sizes[0].size() >= 1 && data.sizes[0].size() <= 20
         && data.colors is list && data.colors.size() >= 1 && data.colors.size() <= 6
         && data.colors[0] is map && data.colors[0].name is string && data.colors[0].name.size() >= 1 && data.colors[0].name.size() <= 60 && data.colors[0].hex is string && data.colors[0].hex.size() >= 4 && data.colors[0].hex.size() <= 20
         && data.inStock is bool
@@ -283,7 +278,7 @@ service cloud.firestore {
         && data.productTitle is string && data.productTitle.size() >= 1 && data.productTitle.size() <= 120
         && data.alarmType in ['BELOW_FLOOR', 'ABOVE_CEILING', 'OUT_OF_STOCK']
         && data.triggerScope in ['total', 'size']
-        && (!('size' in data) || (data.size is string && data.size.size() <= 8 && data.size in ['XS', 'S', 'M', 'L', 'XL', 'XXL']))
+        && (!('size' in data) || (data.size is string && data.size.size() >= 1 && data.size.size() <= 20))
         && data.currentQuantity is number && data.currentQuantity >= 0 && data.currentQuantity <= 1000000
         && data.threshold is number && data.threshold >= 0 && data.threshold <= 1000000
         && data.acknowledged is bool
@@ -318,7 +313,7 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'title', 'tagline', 'description', 'price', 'compareAtPrice',
-          'category', 'discipline', 'image', 'detailImage', 'sizes', 'colors',
+          'category', 'sizingType', 'discipline', 'image', 'detailImage', 'sizes', 'colors',
           'inStock', 'inventoryQuantity', 'stockBySize', 'stockFloor', 'stockCeiling',
           'weightGsm', 'fabricSpecs', 'athleteFitNotes', 'featured', 'updatedAt'
         ])

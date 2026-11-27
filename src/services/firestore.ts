@@ -24,10 +24,12 @@ import {
   handleFirestoreError,
 } from '../lib/firebase';
 import {
-  ALL_GARMENT_SIZES,
+  ALL_SIZING_TYPES,
   GarmentSize,
   Product,
+  ProductCategory,
   ShopifyConfig,
+  SizingType,
   SyncLogEntry,
   CartItem,
   CheckoutCustomerInfo,
@@ -51,6 +53,7 @@ import {
   getProductCeiling,
   getProductFloor,
   getTotalFromStockMap,
+  inferSizingTypeFromProduct,
 } from '../utils/inventory';
 
 export interface FirestorePromotion {
@@ -160,11 +163,27 @@ const toSafeId = (raw: string): string => {
   return (clean || `id-${Date.now()}`).slice(0, 128);
 };
 
+function sanitizeCategory(rawCategory: string | undefined): ProductCategory {
+  const clean = clampStr(rawCategory, 60);
+  return clean.length >= 2 ? clean : 'Tops';
+}
+
+function sanitizeSizingType(
+  rawSizingType: string | undefined,
+  sizes: GarmentSize[],
+  category: string
+): SizingType {
+  if (rawSizingType && ALL_SIZING_TYPES.includes(rawSizingType as SizingType)) {
+    return rawSizingType as SizingType;
+  }
+  return inferSizingTypeFromProduct({ sizingType: undefined, sizes, category });
+}
+
 function sanitizeSizes(rawSizes: GarmentSize[] | undefined): GarmentSize[] {
-  const filtered = (rawSizes || ['M', 'L']).filter((s): s is GarmentSize =>
-    ALL_GARMENT_SIZES.includes(s)
-  );
-  return filtered.length > 0 ? Array.from(new Set(filtered)).slice(0, 6) : ['M'];
+  const cleaned = (rawSizes || ['M', 'L'])
+    .map((s) => clampStr(String(s ?? ''), 20))
+    .filter((s) => s.length >= 1);
+  return cleaned.length > 0 ? Array.from(new Set(cleaned)).slice(0, 10) : ['M'];
 }
 
 function sanitizeColors(
@@ -252,7 +271,8 @@ export function subscribeToProducts(
           price: data.price,
           compareAtPrice: data.compareAtPrice,
           currency: data.currency || 'USD',
-          category: data.category,
+          category: sanitizeCategory(data.category),
+          sizingType: sanitizeSizingType(data.sizingType, sizes, String(data.category || '')),
           discipline: data.discipline,
           image: data.image,
           detailImage: data.detailImage,
@@ -458,6 +478,9 @@ export async function createProductInFirestore(
     Math.min(1000000, Math.floor(Number(newProductData.stockCeiling ?? DEFAULT_STOCK_CEILING)))
   );
 
+  const cleanCategory = sanitizeCategory(newProductData.category);
+  const cleanSizingType = sanitizeSizingType(newProductData.sizingType, cleanSizes, cleanCategory);
+
   const payload: Record<string, unknown> = {
     shopifyId,
     title: clampStr(newProductData.title, 120, 'Technical Garment'),
@@ -466,7 +489,8 @@ export async function createProductInFirestore(
     description: clampStr(newProductData.description, 2000, 'Engineered for competition.'),
     price: Math.max(1, Math.min(100000, Number(newProductData.price) || 120)),
     currency: 'USD',
-    category: newProductData.category,
+    category: cleanCategory,
+    sizingType: cleanSizingType,
     discipline: newProductData.discipline,
     image: clampStr(newProductData.image, 500, '/src/assets/images/product_stealth_jersey_1793037645515.jpg'),
     sizes: cleanSizes,
@@ -521,6 +545,8 @@ export async function createProductInFirestore(
 export async function updateProductVariantsAndStockInFirestore(
   product: Product,
   updates: {
+    category?: ProductCategory;
+    sizingType?: SizingType;
     sizes?: GarmentSize[];
     colors?: { name: string; hex: string }[];
     stockBySize?: Partial<Record<GarmentSize, number>>;
@@ -529,7 +555,13 @@ export async function updateProductVariantsAndStockInFirestore(
   }
 ): Promise<void> {
   const path = `products/${product.id}`;
+  const nextCategory = sanitizeCategory(updates.category ?? product.category);
   const nextSizes = sanitizeSizes(updates.sizes ?? product.sizes);
+  const nextSizingType = sanitizeSizingType(
+    updates.sizingType ?? product.sizingType,
+    nextSizes,
+    nextCategory
+  );
   const nextColors = sanitizeColors(updates.colors ?? product.colors);
   const currentMap = getEffectiveStockMap(product);
   const nextStockMap = sanitizeStockBySize(nextSizes, updates.stockBySize ?? currentMap, product.inventoryQuantity);
@@ -546,6 +578,8 @@ export async function updateProductVariantsAndStockInFirestore(
 
   try {
     await updateDoc(doc(db, 'products', product.id), {
+      category: nextCategory,
+      sizingType: nextSizingType,
       sizes: nextSizes,
       colors: nextColors,
       stockBySize: nextStockMap,
@@ -766,8 +800,8 @@ export async function sendStockAlarmInFirestore(params: {
     updatedAt: serverTimestamp(),
   };
 
-  if (params.size && ALL_GARMENT_SIZES.includes(params.size)) {
-    payload.size = params.size;
+  if (params.size && clampStr(params.size, 20).length >= 1) {
+    payload.size = clampStr(params.size, 20);
   }
 
   try {
@@ -1098,8 +1132,8 @@ export async function createOrderInFirestore(
       const prod = prodMap.get(item.productId);
       if (prod) {
         const nextStockBySize = { ...getEffectiveStockMap(prod) };
-        const sz = item.size as GarmentSize;
-        if (ALL_GARMENT_SIZES.includes(sz)) {
+        const sz = clampStr(item.size, 20);
+        if (sz && (prod.sizes.includes(sz) || sz in nextStockBySize)) {
           nextStockBySize[sz] = Math.max(0, (nextStockBySize[sz] ?? 0) - item.quantity);
         }
         const nextTotal = getTotalFromStockMap(prod.sizes, nextStockBySize);
@@ -1489,8 +1523,8 @@ export async function dispatchOrderFromAdminInFirestore(params: {
         const prod = prodMap.get(item.productId);
         if (!prod) continue;
         const nextStockBySize = { ...getEffectiveStockMap(prod) };
-        const sz = item.size as GarmentSize;
-        if (ALL_GARMENT_SIZES.includes(sz)) {
+        const sz = clampStr(item.size, 20);
+        if (sz && (prod.sizes.includes(sz) || sz in nextStockBySize)) {
           nextStockBySize[sz] = Math.max(0, (nextStockBySize[sz] ?? 0) - item.quantity);
         }
         const nextTotal = getTotalFromStockMap(prod.sizes, nextStockBySize);

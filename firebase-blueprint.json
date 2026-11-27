@@ -51,8 +51,22 @@
         },
         "category": {
           "type": "string",
-          "description": "Garment category.",
-          "enum": ["Tops", "Bottoms", "Outerwear", "Accessories"]
+          "description": "Product category assigned by admin for classification.",
+          "minLength": 2,
+          "maxLength": 60
+        },
+        "sizingType": {
+          "type": "string",
+          "description": "Preset or custom sizing schema matched to the product type.",
+          "enum": [
+            "apparel_alpha",
+            "bottoms_waist",
+            "footwear_us",
+            "dual_fit",
+            "accessories_one_size",
+            "youth_alpha",
+            "custom"
+          ]
         },
         "discipline": {
           "type": "string",
@@ -72,7 +86,7 @@
         },
         "sizes": {
           "type": "array",
-          "description": "Available garment sizes (bounded up to 6 items)."
+          "description": "Available product sizes preset by sizingType (bounded up to 10 items)."
         },
         "colors": {
           "type": "array",
@@ -88,7 +102,7 @@
         },
         "stockBySize": {
           "type": "object",
-          "description": "Map of available stock quantity per garment size (XS, S, M, L, XL, XXL)."
+          "description": "Map of available stock quantity per product size key."
         },
         "stockFloor": {
           "type": "number",

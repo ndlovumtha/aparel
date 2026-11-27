@@ -25,7 +25,16 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
   const [sortBy, setSortBy] = useState<'featured' | 'price-asc' | 'price-desc' | 'weight'>('featured');
 
   const disciplines: DisciplineFilter[] = ['All', 'Track & Field', 'Pitch & Field', 'Endurance', 'Recovery'];
-  const categories = ['All', 'Tops', 'Bottoms', 'Outerwear', 'Accessories'];
+  const categories = useMemo(() => {
+    const unique = Array.from(
+      new Set(
+        products
+          .map((p) => (p.category || '').trim())
+          .filter((c) => c.length > 0)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+    return ['All', ...unique];
+  }, [products]);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
 

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  ALL_SIZING_TYPES,
   ALL_STAFF_PERMISSIONS,
   DEFAULT_RIGHTS_PROFILES,
   type AccountRole,
@@ -13,11 +14,13 @@ import {
   type OrderPrivateShippingInfo,
   type OrderStatus,
   type Product,
+  type ProductCategory,
   type RightsProfileDefinition,
   type SessionAccount,
   type ShipmentStatus,
   type ShipmentTrackingRecord,
   type ShopifyConfig,
+  type SizingType,
   type StaffMemberSummary,
   type StaffPermission,
   type StockAlarm,
@@ -54,6 +57,8 @@ export interface StoredSuperuserRecord {
 }
 
 export interface ProductVariantPatch {
+  category?: ProductCategory;
+  sizingType?: SizingType;
   sizes?: GarmentSize[];
   colors?: { name: string; hex: string }[];
   stockBySize?: Partial<Record<GarmentSize, number>>;
@@ -900,15 +905,37 @@ export function getOperationsSnapshot(requester: SessionAccount): {
   };
 }
 
+function cleanCategory(raw: unknown): string {
+  return String(raw ?? '').trim().slice(0, 60);
+}
+
+function cleanSizingType(raw: unknown): SizingType {
+  if (typeof raw === 'string' && ALL_SIZING_TYPES.includes(raw as SizingType)) {
+    return raw as SizingType;
+  }
+  return 'apparel_alpha';
+}
+
+function cleanSizesList(raw: unknown): GarmentSize[] {
+  if (!Array.isArray(raw)) return ['M', 'L'];
+  const cleaned = raw
+    .map((s) => String(s ?? '').trim().slice(0, 20))
+    .filter((s) => s.length >= 1);
+  return cleaned.length > 0 ? Array.from(new Set(cleaned)).slice(0, 10) : ['M'];
+}
+
 export function createProductOnServer(
   input: Omit<Product, 'id' | 'shopifyId' | 'handle'>,
   actor: SessionAccount
 ): Product {
+  const category = cleanCategory(input.category);
+  if (category.length < 2) {
+    throw new HttpError(400, 'Product category must be at least 2 characters.');
+  }
+
   const store = readStore();
-  const cleanSizes = (input.sizes || ['M', 'L']).filter((s): s is GarmentSize =>
-    ALL_SIZES.includes(s)
-  );
-  const sizes: GarmentSize[] = cleanSizes.length > 0 ? Array.from(new Set(cleanSizes)) : ['M'];
+  const sizes = cleanSizesList(input.sizes);
+  const sizingType = cleanSizingType(input.sizingType);
 
   const stockBySize: Partial<Record<GarmentSize, number>> = {};
   for (const sz of sizes) {
@@ -925,6 +952,8 @@ export function createProductOnServer(
 
   const created: Product = {
     ...input,
+    category,
+    sizingType,
     id: `offside-srv-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     shopifyId: `gid://shopify/Product/${Math.floor(8490000000000 + Math.random() * 9000000000)}`,
     handle: handleBase || 'offside-item',
@@ -944,7 +973,7 @@ export function createProductOnServer(
   appendLogInternal(
     store,
     'OPS_PRODUCT_CREATED',
-    `@${actor.username} (${actor.role}) published "${created.title}" (Stock: ${totalQty}, F:${floor}/C:${ceiling}).`,
+    `@${actor.username} (${actor.role}) published "${created.title}" [${created.category} · ${sizingType}] (Stock: ${totalQty}, F:${floor}/C:${ceiling}).`,
     'success'
   );
   maybeEmitStockAlarm(store, {
@@ -965,11 +994,23 @@ export function updateProductVariantsOnServer(
   updates: ProductVariantPatch,
   actor: SessionAccount
 ): void {
+  let nextCategory: string | undefined;
+  if (updates.category !== undefined) {
+    nextCategory = cleanCategory(updates.category);
+    if (nextCategory.length < 2) {
+      throw new HttpError(400, 'Product category must be at least 2 characters.');
+    }
+  }
+
   const store = readStore();
   const createdIdx = store.createdProducts.findIndex((p) => p.id === productId);
   const current = createdIdx > -1 ? store.createdProducts[createdIdx] : baseProduct;
 
-  const sizes = updates.sizes ?? current?.sizes ?? ['M', 'L'];
+  const sizes = updates.sizes ? cleanSizesList(updates.sizes) : cleanSizesList(current?.sizes ?? ['M', 'L']);
+  const sizingType =
+    updates.sizingType !== undefined
+      ? cleanSizingType(updates.sizingType)
+      : current?.sizingType;
   const stockBySize = updates.stockBySize ?? current?.stockBySize ?? {};
   const totalQty = sizes.reduce((sum, sz) => sum + Math.max(0, Math.floor(Number(stockBySize[sz] ?? 0))), 0);
   const floor = Math.max(0, Math.floor(updates.stockFloor ?? current?.stockFloor ?? 10));
@@ -978,6 +1019,8 @@ export function updateProductVariantsOnServer(
   if (createdIdx > -1) {
     store.createdProducts[createdIdx] = {
       ...store.createdProducts[createdIdx],
+      category: nextCategory ?? store.createdProducts[createdIdx].category,
+      sizingType: sizingType ?? store.createdProducts[createdIdx].sizingType,
       sizes,
       colors: updates.colors ?? store.createdProducts[createdIdx].colors,
       stockBySize,
@@ -992,6 +1035,8 @@ export function updateProductVariantsOnServer(
     store.productPatches[productId] = {
       ...store.productPatches[productId],
       ...updates,
+      category: nextCategory ?? store.productPatches[productId]?.category,
+      sizingType: sizingType ?? store.productPatches[productId]?.sizingType,
       sizes,
       stockBySize,
       stockFloor: floor,
@@ -1178,8 +1223,8 @@ export function createOrderOnServer(params: {
         if (rem > 0) rem -= 1;
       }
     }
-    const sz = item.size as GarmentSize;
-    if (ALL_SIZES.includes(sz)) {
+    const sz = String(item.size || '').trim();
+    if (sz && (sizes.includes(sz) || sz in nextStockMap)) {
       nextStockMap[sz] = Math.max(0, (nextStockMap[sz] ?? 0) - item.quantity);
     }
     const nextTotal = sizes.reduce((sum, s) => sum + (nextStockMap[s] ?? 0), 0);
